@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install ruff
@@ -78,7 +78,6 @@ jobs:
   security:
     name: Dependency audit
     runs-on: windows-latest
-    continue-on-error: true  # 发现漏洞时先上报，不阻塞主干修复
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -89,4 +88,5 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
       - name: Audit runtime dependencies
+        continue-on-error: true  # 发现漏洞时先上报，不阻塞主干修复
         run: pip-audit
