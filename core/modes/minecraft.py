@@ -92,7 +92,13 @@ def stage_map_materials(context: PipelineContext):
         raise ValueError(f"Minecraft {version} 在当前筛选条件下没有可用方块")
 
     context.report(0.2, "正在匹配方块颜色")
-    palette_rgb = np.array([block.rgb for block in candidates], dtype=np.uint8)
+    overrides = settings.get("texture_overrides") or {}
+
+    def block_color(block: MinecraftBlock):
+        value = overrides.get(block.block_id, block.rgb)
+        return tuple(int(channel) for channel in value)
+
+    palette_rgb = np.array([block_color(block) for block in candidates], dtype=np.uint8)
     palette_lab = srgb_to_lab(palette_rgb)
     pixels = context.grid_rgb.reshape(-1, 3)
     target_lab = srgb_to_lab(pixels)
@@ -103,14 +109,15 @@ def stage_map_materials(context: PipelineContext):
         PaletteEntry(
             id=block.block_id,
             name=block.name,
-            rgb=block.rgb,
-            source=block.source,
+            rgb=block_color(block),
+            source="user-resource-pack" if block.block_id in overrides else block.source,
             meta={
                 "category": block.category,
                 "obtainability": block.obtainability,
                 "renewable": block.renewable,
                 "cost_tier": block.cost_tier,
                 "transparent": block.transparent,
+                "texture": "user-average" if block.block_id in overrides else "approximate",
             },
         )
         for block in candidates
@@ -119,10 +126,10 @@ def stage_map_materials(context: PipelineContext):
         MaterialRef(
             id=block.block_id,
             name=block.name,
-            rgb=block.rgb,
+            rgb=block_color(block),
             kind="minecraft",
             category=block.category,
-            source=block.source,
+            source="user-resource-pack" if block.block_id in overrides else block.source,
             verified=False,
             meta={"version": settings.get("version"), "edition": settings.get("edition")},
         )
@@ -148,7 +155,10 @@ def stage_map_materials(context: PipelineContext):
             "legal_rate": 1.0,
             "mean_delta_e00": float(np.mean(deltas)),
             "p95_delta_e00": float(np.percentile(deltas, 95)),
-            "note": DISPLAY_NOTE,
+            "texture_overrides": len(overrides),
+            "note": DISPLAY_NOTE + (
+                f" 已加载用户资源包贴图 {len(overrides)} 个（使用平均色）。" if overrides else ""
+            ),
         }
     )
     context.diagnostics["matched_blocks"] = sorted(used_ids)

@@ -26,7 +26,6 @@ PRESET_OPTIONS = (
     ("custom", "自定义"),
     ("quick", "快速预览"),
     ("fidelity", "色彩保真"),
-    ("detail", "细节保护"),
     ("smooth", "平整色块"),
     ("auto", "自动选择"),
 )
@@ -35,7 +34,6 @@ SAMPLING_OPTIONS = (
     ("mean", "块均值"),
     ("mode", "块频数"),
     ("center", "最近像素"),
-    ("edge", "边缘保护"),
 )
 
 
@@ -48,24 +46,17 @@ def _auto_preset(settings: dict[str, object], image_rgb: np.ndarray, spec: GridS
         interpolation=cv2.INTER_AREA,
     )
     unique_ratio = len(np.unique(small.reshape(-1, 3), axis=0)) / float(small.shape[0] * small.shape[1])
-    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
-    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    edge_density = float(np.mean(cv2.magnitude(grad_x, grad_y) > 30.0))
 
     resolved = dict(settings)
-    if spec.width * spec.height >= 16384:
-        resolved.update(preset="quick", algorithm="minibatch_lab", colors=min(int(settings.get("colors", 16)), 32))
-        reason = "网格较大，选择 MiniBatch 以控制耗时"
+    if spec.width * spec.height >= 65536:
+        resolved.update(preset="quick", algorithm="minibatch_rgb", colors=min(int(settings.get("colors", 16)), 32))
+        reason = "网格很大，选择 MiniBatch 以控制耗时"
     elif unique_ratio < 0.06:
         resolved.update(preset="fidelity", algorithm="kmeans_lab")
         reason = "颜色复杂度低，优先色差精度"
-    elif edge_density >= 0.28:
-        resolved.update(preset="detail", sampling="edge", algorithm="kmeans_lab")
-        reason = "边缘密度高，启用细节保护采样"
     else:
         resolved.update(preset="fidelity", algorithm="kmeans_lab")
-        reason = "常规图像，采用 Lab K-Means 基线"
+        reason = "常规图像，采用 Lab K-Means 基线（边缘保护采样经基准未显示稳定收益）"
     resolved["auto_reason"] = reason
     return resolved
 

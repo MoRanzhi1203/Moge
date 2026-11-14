@@ -1,6 +1,8 @@
 import tempfile
+import zipfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 from Moge.core.materials import (
     BEAD_CATALOG,
@@ -12,6 +14,7 @@ from Moge.core.materials import (
     filter_beads,
     filter_blocks,
     load_bead_catalog_csv,
+    load_resource_pack_zip,
     parse_version,
 )
 
@@ -95,3 +98,49 @@ def test_load_bead_catalog_csv_requires_columns():
         path.write_text("brand,code\nA,B\n", encoding="utf-8")
         with pytest.raises(ValueError):
             load_bead_catalog_csv(str(path))
+
+
+def _texture_png(bgr):
+    import cv2
+
+    image = np.zeros((4, 4, 3), np.uint8)
+    image[:, :] = bgr
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    return encoded.tobytes()
+
+
+def test_load_resource_pack_zip_reads_block_average_color(tmp_path):
+    path = tmp_path / "pack.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("assets/minecraft/textures/block/stone.png", _texture_png((0, 0, 255)))
+        archive.writestr("assets/minecraft/textures/block/unknown_block.png", _texture_png((0, 255, 0)))
+
+    result = load_resource_pack_zip(str(path))
+    assert result.loaded == 1
+    assert result.overrides["stone"] == (255, 0, 0)
+    assert result.skipped >= 1
+
+
+def test_resource_pack_rejects_path_traversal(tmp_path):
+    path = tmp_path / "evil.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("../evil.png", _texture_png((0, 0, 0)))
+    with pytest.raises(ValueError):
+        load_resource_pack_zip(str(path))
+
+
+def test_minecraft_pipeline_uses_texture_override():
+    from Moge.core.models import GridSpec
+    from Moge.core.modes import registry
+    from Moge.core.pipeline import run_pipeline
+
+    image = np.full((32, 32, 3), (130, 130, 130), np.uint8)
+    settings = dict(registry.default_settings("minecraft"))
+    settings["texture_overrides"] = {"stone": (0, 255, 0)}
+    result = run_pipeline(image, registry.build_config("minecraft", GridSpec(16, 16), settings))
+
+    stone = next(entry for entry in result.grid.entries if entry.id == "stone")
+    assert stone.rgb == (0, 255, 0)
+    assert stone.source == "user-resource-pack"
+    assert result.stats["texture_overrides"] == 1

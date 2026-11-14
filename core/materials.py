@@ -4,10 +4,14 @@
 
 import csv
 import re
+import zipfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+import cv2
+import numpy as np
 
 RGB = tuple[int, int, int]
 
@@ -387,3 +391,92 @@ def board_partitions(width: int, height: int, board_width: int, board_height: in
             )
             index += 1
     return boards
+
+
+# ------------------- Minecraft 资源包（只读用户本地文件） ------------------- #
+
+MAX_PACK_MEMBERS = 5000
+MAX_TEXTURE_BYTES = 8 * 1024 * 1024
+MAX_PACK_UNCOMPRESSED = 200 * 1024 * 1024
+BLOCK_TEXTURE_PREFIX = "assets/minecraft/textures/block/"
+
+
+@dataclass(frozen=True)
+class ResourcePackResult:
+    """ 资源包导入结果：方块 ID -> 可见面平均色 """
+
+    overrides: dict[str, RGB]
+    loaded: int
+    skipped: int
+    warnings: tuple[str, ...]
+    pack_name: str
+
+
+def load_resource_pack_zip(path: str, allowed_ids: Optional[Iterable[str]] = None) -> ResourcePackResult:
+    """
+    只读解析用户提供的 Java 版资源包 ZIP，取方块贴图的平均色作为预览/匹配色。
+    不落盘、不执行脚本、不读取包内其它路径；路径穿越与超大解压比直接拒绝。
+    """
+    allowed = set(allowed_ids) if allowed_ids is not None else {block.block_id for block in MC_BLOCKS}
+    overrides: dict[str, RGB] = {}
+    warnings: list[str] = []
+    skipped = 0
+
+    with zipfile.ZipFile(path, "r") as archive:
+        members = archive.infolist()
+        if len(members) > MAX_PACK_MEMBERS:
+            raise ValueError(f"资源包文件数量超过上限 {MAX_PACK_MEMBERS}")
+        if sum(info.file_size for info in members) > MAX_PACK_UNCOMPRESSED:
+            raise ValueError("资源包解压后体积超过上限")
+
+        for info in members:
+            name = info.filename.replace("\\", "/")
+            parts = name.split("/")
+            if name.startswith("/") or ".." in parts or ":" in parts[0]:
+                raise ValueError(f"资源包包含非法路径：{name}")
+            if not name.startswith(BLOCK_TEXTURE_PREFIX) or not name.lower().endswith(".png"):
+                continue
+            if info.file_size > MAX_TEXTURE_BYTES:
+                skipped += 1
+                warnings.append(f"跳过过大的贴图：{name}")
+                continue
+
+            block_id = Path(name).stem
+            if block_id not in allowed:
+                skipped += 1
+                continue
+
+            try:
+                data = archive.read(info)
+                image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+                if image is None:
+                    skipped += 1
+                    warnings.append(f"无法解析贴图：{name}")
+                    continue
+                if image.ndim == 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                if image.ndim == 3 and image.shape[2] == 4:
+                    visible = image[..., 3] > 0
+                    if not np.any(visible):
+                        skipped += 1
+                        continue
+                    pixels = image[..., :3][visible]
+                else:
+                    pixels = image.reshape(-1, image.shape[2] if image.ndim == 3 else 1)[:, :3]
+                mean_bgr = pixels.reshape(-1, 3).mean(axis=0)
+                overrides[block_id] = (
+                    int(round(mean_bgr[2])),
+                    int(round(mean_bgr[1])),
+                    int(round(mean_bgr[0])),
+                )
+            except Exception as exc:
+                skipped += 1
+                warnings.append(f"读取失败 {name}：{exc}")
+
+    return ResourcePackResult(
+        overrides=overrides,
+        loaded=len(overrides),
+        skipped=skipped,
+        warnings=tuple(warnings[:20]),
+        pack_name=Path(path).name,
+    )

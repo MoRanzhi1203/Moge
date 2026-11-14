@@ -46,6 +46,7 @@ from Moge.core.materials import (
     BeadColor,
     board_partitions,
     load_bead_catalog_csv,
+    load_resource_pack_zip,
 )
 from Moge.core.models import GridSpec, RenderResult
 from Moge.core.modes import beads as beads_mode
@@ -81,6 +82,7 @@ class MainWindow(QMainWindow):
         self.undo_stack = {mode: [] for mode, _ in registry.mode_options()}
         self.redo_stack = {mode: [] for mode, _ in registry.mode_options()}
         self.bead_catalog = list(BEAD_CATALOG)
+        self.mc_texture_overrides = {}
         self.selected_entry = 0
         self.tool = "paint"
         self._stroke_pending = False
@@ -273,6 +275,12 @@ class MainWindow(QMainWindow):
         note = QLabel(minecraft_mode.DISPLAY_NOTE)
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        self.btn_import_pack = QPushButton("导入资源包 ZIP...")
+        self.mc_pack_note = QLabel("未加载用户资源包")
+        self.mc_pack_note.setWordWrap(True)
+        layout.addWidget(self.btn_import_pack)
+        layout.addWidget(self.mc_pack_note)
         layout.addStretch(1)
         return panel
 
@@ -424,6 +432,7 @@ class MainWindow(QMainWindow):
         self.act_grid.toggled.connect(self.canvas.set_grid_visible)
         self.tool_group.triggered.connect(self._on_tool_changed)
         self.btn_import_beads.clicked.connect(self.import_bead_catalog)
+        self.btn_import_pack.clicked.connect(self.import_minecraft_pack)
         self.btn_cancel.clicked.connect(self.cancel_task)
 
     def _connect_action(self, action, function):
@@ -492,6 +501,7 @@ class MainWindow(QMainWindow):
                 "max_cost_tier": self.mc_cost.currentData(),
                 "included_ids": [],
                 "excluded_ids": [],
+                "texture_overrides": dict(self.mc_texture_overrides),
             }
         return {
             "brand": self.bead_brand.currentData(),
@@ -522,6 +532,15 @@ class MainWindow(QMainWindow):
             for index in range(self.mc_categories.count()):
                 item = self.mc_categories.item(index)
                 item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in selected else Qt.Unchecked)
+            overrides = settings.get("texture_overrides") or {}
+            self.mc_texture_overrides = {
+                str(block_id): tuple(int(channel) for channel in rgb)
+                for block_id, rgb in overrides.items()
+            }
+            if self.mc_texture_overrides:
+                self.mc_pack_note.setText(f"已加载用户资源包贴图 {len(self.mc_texture_overrides)} 个（平均色）")
+            else:
+                self.mc_pack_note.setText("未加载用户资源包")
         else:
             catalog = settings.get("catalog")
             if catalog:
@@ -698,6 +717,22 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             logger.error("导出 PDF 失败", exc_info=True)
             QMessageBox.critical(self, "错误", f"导出失败：{exc}")
+
+    def import_minecraft_pack(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入 Minecraft 资源包", "", "资源包 ZIP (*.zip)")
+        if not path:
+            return
+        try:
+            pack = load_resource_pack_zip(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "错误", f"资源包读取失败：{exc}")
+            return
+        self.mc_texture_overrides = dict(pack.overrides)
+        self.mc_pack_note.setText(
+            f"已加载 {pack.loaded} 个方块贴图（平均色），跳过 {pack.skipped}"
+        )
+        self.lbl_status.setText(f"已导入资源包：{pack.pack_name}（{pack.loaded} 个方块）")
+        logger.info("导入资源包：%s，覆盖 %s 个方块", path, pack.loaded)
 
     def import_bead_catalog(self):
         path, _ = QFileDialog.getOpenFileName(self, "导入拼豆色卡", "", "CSV 文件 (*.csv)")
