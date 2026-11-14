@@ -1,16 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+# 基于 spec 所在目录解析，避免硬编码绝对路径
+_spec_dir = Path(SPECPATH)
 
 a = Analysis(
-    ['main.py'],
-    pathex=['E:/PyQt5_demo/Moge'],
+    [str(_spec_dir / 'main.py')],
+    pathex=[str(_spec_dir.parent), str(_spec_dir)],
     binaries=[],
     datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # 代码中未使用、且体积较大的依赖，避免误打包
+        'tkinter',
+        'matplotlib',
+        'pandas',
+        'seaborn',
+        'scipy',
+        'sklearn',
+        'pyqtgraph',
+        'qdarkstyle',
+        'requests',
+        'dotenv',
+        'pytest',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -25,7 +42,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -38,7 +55,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='Moge',
 )

@@ -2,14 +2,18 @@
 # ui/main_window.py - 主窗口布局
 ##############################
 
+from pathlib import Path
+
 import cv2
 import numpy as np
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QThread
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QMainWindow, QLabel, QFrame, QVBoxLayout, QGroupBox, QPushButton, \
     QFormLayout, QSpinBox, QComboBox, QFileDialog, QMessageBox, QProgressDialog
 
-from Moge.core.image_processor import img_resize, img_pixelize_mean, img_pixelize_common, color_clustering
+from Moge.core.image_processor import ResizeMode
+from Moge.core.models import PixelMethod, ProcessingParams
+from Moge.ui.worker import ProcessingWorker
 from Moge.utils.logger_config import get_module_logger
 
 # 获取模块日志器
@@ -23,9 +27,12 @@ class MainWindow(QMainWindow):
         """ 初始化 """
         super().__init__()  # 调用父类的构造函数
         logger.debug("开始初始化主窗口")
-        self.initUI()
         self.original_img = None
         self.processed_img = None
+        self._thread = None
+        self._worker = None
+        self._progress_dialog = None
+        self.initUI()
         self.setup_connections()
         logger.info("主窗口初始化完成")
 
@@ -73,10 +80,12 @@ class MainWindow(QMainWindow):
             self.block_size.setValue(4)  # 设置默认值
 
             self.resize_method = QComboBox()  # 创建调整方法选择框
-            self.resize_method.addItems(["向上取整", "向下取整", "四舍五入"])  # 设置选项
+            for mode in ResizeMode:  # 使用枚举保证 UI 显示与算法参数一致
+                self.resize_method.addItem(mode.value, mode)
 
             self.pixel_method = QComboBox()  # 创建计算方法选择框
-            self.pixel_method.addItems(["平均值", "频数值"])  # 设置选项
+            for method in PixelMethod:  # 使用枚举保证 UI 显示与算法参数一致
+                self.pixel_method.addItem(method.value, method)
 
             pixel_layout.addRow("像素块大小:", self.block_size)  # 添加像素块大小输入框到布局
             pixel_layout.addRow("调整方法:", self.resize_method)  # 添加调整方法选择框到布局
@@ -163,23 +172,34 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "没有可保存的处理后图像！")
                 return
 
-            if self.processed_img is not None:
-                path, selected_filter = QFileDialog.getSaveFileName(
-                    self, "保存图片", "", "PNG文件 (*.png);;JPEG文件 (*.jpg)"
-                )
+            path, selected_filter = QFileDialog.getSaveFileName(
+                self, "保存图片", "", "PNG文件 (*.png);;JPEG文件 (*.jpg *.jpeg)"
+            )
 
-                if not path:
-                    logger.debug("用户取消保存操作")
-                    return
+            if not path:
+                logger.debug("用户取消保存操作")
+                return
 
-                logger.info(f"用户选择保存路径：{path} | 格式：{selected_filter}")
+            # 确保扩展名与所选格式一致
+            ext = Path(path).suffix.lower()
+            if ext not in (".png", ".jpg", ".jpeg"):
+                ext = ".png" if "PNG" in selected_filter else ".jpg"
+                path = f"{path}{ext}"
 
-                # 转换颜色空间并保存
-                save_img = cv2.cvtColor(self.processed_img, cv2.COLOR_RGB2BGR)
-                cv2.imencode('.jpg', save_img)[1].tofile(path)
+            logger.info(f"用户选择保存路径：{path} | 格式：{selected_filter}")
 
-                logger.info(f"图片保存成功：{path}")
-                QMessageBox.information(self, "成功", "图片保存成功！")
+            # 转换颜色空间并按实际扩展名编码保存
+            save_img = cv2.cvtColor(self.processed_img, cv2.COLOR_RGB2BGR)
+            codec = ".png" if ext == ".png" else ".jpg"
+            encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3] if codec == ".png" else [cv2.IMWRITE_JPEG_QUALITY, 95]
+            ok, encoded = cv2.imencode(codec, save_img, encode_params)
+            if not ok:
+                raise IOError(f"图像编码失败：{codec}")
+
+            encoded.tofile(path)
+
+            logger.info(f"图片保存成功：{path}")
+            QMessageBox.information(self, "成功", "图片保存成功！")
 
         except PermissionError:  # 文件写入权限被拒绝
             logger.error(f"文件写入权限被拒绝：{path}")
@@ -221,85 +241,101 @@ class MainWindow(QMainWindow):
             self.canvas.setText("图片显示错误！")
 
     def process_image(self):
-        """ 执行处理 """
+        """ 执行处理（工作线程，避免阻塞界面） """
         logger.info("开始图像处理流程")
-        try:
-            # 参数校验
-            if self.original_img is None:
-                logger.warning("未加载图像时尝试处理")
-                QMessageBox.warning(self, "警告", "请先打开图片！")
+
+        # 参数校验
+        if self.original_img is None:
+            logger.warning("未加载图像时尝试处理")
+            QMessageBox.warning(self, "警告", "请先打开图片！")
+            return
+        if self._thread is not None:
+            logger.warning("已有处理任务在进行中")
+            return
+
+        params = ProcessingParams(
+            block_size=self.block_size.value(),
+            resize_mode=self.resize_method.currentData(),
+            pixel_method=self.pixel_method.currentData(),
+            n_clusters=self.cluster_size.value(),
+            seed=self.cluster_seed.value()
+        )
+        logger.info(f"处理参数：{params}")
+
+        # 创建进度条
+        self._progress_dialog = QProgressDialog("图像处理中...", "取消", 0, 100, self)
+        self._progress_dialog.setWindowTitle("处理进度")
+        self._progress_dialog.setWindowModality(Qt.WindowModal)  # 防止处理期间重复操作
+        self._progress_dialog.setMinimumDuration(0)  # 立即显示
+        self._progress_dialog.setAutoClose(False)
+        self._progress_dialog.setAutoReset(False)
+        self._progress_dialog.canceled.connect(self.cancel_processing)
+        self._progress_dialog.show()
+
+        # 启动工作线程
+        self._worker = ProcessingWorker(self.original_img, params)
+        self._thread = QThread(self)
+        self._worker.moveToThread(self._thread)
+
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_processed)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.cancelled.connect(self._on_cancelled)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.failed.connect(self._thread.quit)
+        self._worker.cancelled.connect(self._thread.quit)
+        self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._on_thread_finished)
+
+        self._thread.start()
+
+    # ---------- 处理回调 ---------- #
+    def _on_progress(self, value, text):
+        """ 更新进度条 """
+        if self._progress_dialog is not None:
+            self._progress_dialog.setLabelText(text)
+            self._progress_dialog.setValue(value)
+
+    def _on_processed(self, img):
+        """ 处理成功 """
+        self.processed_img = np.ascontiguousarray(img)
+        self.show_image(self.processed_img)
+        logger.info(f"图像处理流程完成，最终图像尺寸：{self.processed_img.shape}")
+        if self._progress_dialog is not None:
+            self._progress_dialog.setValue(100)
+
+    def _on_failed(self, message):
+        """ 处理失败 """
+        logger.error(f"图像处理失败：{message}")
+        QMessageBox.critical(self, "错误", f"处理失败：{message}")
+
+    def _on_cancelled(self):
+        """ 用户取消处理 """
+        logger.info("图像处理已取消")
+
+    def cancel_processing(self):
+        """ 请求取消当前处理任务 """
+        if self._worker is not None:
+            self._worker.cancel()
+            logger.info("已请求取消图像处理")
+
+    def _on_thread_finished(self):
+        """ 线程结束后清理引用与对话框 """
+        if self._progress_dialog is not None:
+            self._progress_dialog.close()
+            self._progress_dialog = None
+        self._worker = None
+        self._thread = None
+        logger.debug("图像处理线程已结束")
+
+    def closeEvent(self, event):
+        """ 关闭窗口前结束后台线程，避免线程被销毁 """
+        if self._thread is not None and self._thread.isRunning():
+            self.cancel_processing()
+            if not self._thread.wait(5000):
+                logger.warning("后台处理未能在超时前结束，暂缓关闭窗口")
+                event.ignore()
                 return
-
-            # 获取处理参数
-            params = {
-                "block_size": self.block_size.value(),
-                "resize_method": self.resize_method.currentText(),
-                "pixel_method": self.pixel_method.currentText(),
-                "n_clusters": self.cluster_size.value(),
-                "seed": self.cluster_seed.value()
-            }
-            logger.info(f"处理参数：{params}")
-
-            # 创建进度条
-            progress_dialog = QProgressDialog("图像处理中...", "取消", 0, 100, self)
-            progress_dialog.setWindowTitle("处理进度")
-            progress_dialog.setWindowModality(Qt.WindowModal)  # 设置为模态对话框，防止点击其他地方
-            progress_dialog.setMinimumDuration(0)  # 设置最短显示时长为 0，立即显示
-            progress_dialog.show()  # 显示进度条
-
-            # 图像预处理
-            processed = self.original_img.copy()
-            logger.debug("原始图像副本创建成功")
-            progress_dialog.setLabelText("开始图像缩放处理")
-            progress_dialog.setValue(10)  # 更新进度
-
-            # 图像缩放
-            logger.debug("开始图像缩放处理")
-            processed = img_resize(
-                processed,
-                params["block_size"],
-                self.resize_method.currentIndex()
-            )
-            logger.info(f"缩放后图像尺寸：{processed.shape}")
-            progress_dialog.setValue(30)  # 更新进度
-
-            # 像素化处理
-            logger.debug("开始像素化处理")
-            progress_dialog.setLabelText("开始像素化处理")
-            if params["pixel_method"] == '平均值':
-                processed = img_pixelize_mean(processed, params["block_size"])
-                logger.debug("完成均值像素化")
-            else:
-                processed = img_pixelize_common(processed, params["block_size"])
-                logger.debug("完成频数像素化")
-            progress_dialog.setValue(50)  # 更新进度
-
-            # 颜色聚类
-            logger.debug("开始颜色聚类处理")
-            progress_dialog.setLabelText("开始颜色聚类处理")
-            processed = color_clustering(
-                processed,
-                params["n_clusters"],
-                params["seed"]
-            )
-            logger.info(f"颜色聚类完成，最终图像尺寸：{processed.shape}")
-            progress_dialog.setValue(80)  # 更新进度
-
-            # 结果处理
-            self.processed_img = processed
-            self.show_image(processed)
-            logger.info("图像处理流程完成")
-
-            # 关闭进度条
-            progress_dialog.setValue(100)  # 进度条填满
-            QTimer.singleShot(500, progress_dialog.close)  # 延迟关闭进度条，以便显示完成状态
-
-        except ValueError as ve:
-            logger.error(f"参数错误：{str(ve)}", exc_info=True)
-            QMessageBox.warning(self, "参数错误", str(ve))
-        except MemoryError:
-            logger.critical("内存不足，无法处理图像")
-            QMessageBox.critical(self, "错误", "内存不足！")
-        except Exception as e:
-            logger.critical("图像处理过程中发生未处理异常", exc_info=True)
-            QMessageBox.critical(self, "错误", f"处理失败：{str(e)}")
+        super().closeEvent(event)

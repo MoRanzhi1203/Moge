@@ -1,8 +1,9 @@
 ##############################
-# utils/logger.py - 日志配置
+# utils/logger_config.py - 日志配置
 ##############################
 
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -12,21 +13,22 @@ LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s (%(filename)s
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-def get_resource_path(relative_path: str) -> Path:
-    """ 获取资源路径（兼容开发和打包环境） """
-    if hasattr(sys, '_MEIPASS'):  # 判断是否为打包后的应用
-        base_dir = Path(sys._MEIPASS)
+def get_log_dir() -> Path:
+    """ 获取可写的日志目录（不写入安装目录或打包临时目录） """
+    base_dir = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
+    if base_dir:
+        log_dir = Path(base_dir) / "Moge" / "logs"
     else:
-        base_dir = Path(__file__).resolve().parent.parent  # 根据实际层级调整
-    return base_dir / relative_path
+        log_dir = Path.home() / ".moge" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
 
 
 def configure_logger():
     """ 配置全局日志系统 """
 
-    # 获取日志目录路径
-    log_dir = get_resource_path("Moge/utils/logs")
-    log_dir.mkdir(parents=True, exist_ok=True)  # 确保日志目录存在
+    # 获取日志目录路径（用户可写目录）
+    log_dir = get_log_dir()
 
     # 日志文件路径
     log_file = log_dir / "app.log"
@@ -62,6 +64,8 @@ def configure_logger():
 
 
 def get_module_logger(name: str):
-    """ 获取模块日志器 """
+    """ 获取模块日志器（避免出现 Moge.Moge.* 重复前缀） """
+    if name == "Moge" or name.startswith("Moge."):
+        return logging.getLogger(name)
     return logging.getLogger(f"Moge.{name}")
 
