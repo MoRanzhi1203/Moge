@@ -30,8 +30,8 @@ dev = [
 moge = "Moge.main:main"
 
 [tool.setuptools]
-packages = ["Moge", "Moge.core", "Moge.ui", "Moge.utils"]
-package-dir = { "Moge" = ".", "Moge.core" = "core", "Moge.ui" = "ui", "Moge.utils" = "utils" }
+packages = ["Moge", "Moge.core", "Moge.core.modes", "Moge.exporters", "Moge.ui", "Moge.utils"]
+package-dir = { "Moge" = ".", "Moge.core" = "core", "Moge.core.modes" = "core/modes", "Moge.exporters" = "exporters", "Moge.ui" = "ui", "Moge.utils" = "utils" }
 
 [tool.ruff]
 line-length = 120
