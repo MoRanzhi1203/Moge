@@ -55,6 +55,22 @@ def test_project_roundtrip_preserves_grid_and_settings():
     assert document.settings["quantizer"] == result.settings["quantizer"]
 
 
+@pytest.mark.parametrize("mode", ["beads", "minecraft"])
+def test_project_roundtrip_material_modes(mode):
+    result = _result(mode)
+    with tempfile.TemporaryDirectory() as directory:
+        path = save_project(str(Path(directory) / f"{mode}.moge"), result)
+        document = load_project(path)
+
+    assert document.mode == mode
+    assert document.grid is not None
+    assert np.array_equal(document.grid.labels, result.grid.labels)
+    assert [entry.id for entry in document.grid.entries] == [entry.id for entry in result.grid.entries]
+    settings = document.settings.get("params", {})
+    if mode == "beads" and settings.get("catalog"):
+        assert isinstance(settings["catalog"][0], dict)
+
+
 def test_project_rejects_unknown_members():
     result = _result()
     with tempfile.TemporaryDirectory() as directory:
