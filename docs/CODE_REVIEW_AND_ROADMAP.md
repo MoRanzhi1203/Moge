@@ -24,10 +24,12 @@
 | 1080p KMeans k=16 | ≈496 s（最坏） | ≤5 s |
 | UI 阻塞 | 全程阻塞 | 主线程无 >100 ms 阻塞，可取消 |
 | 打包产物 | 504.9 MB | ≤250 MB |
-| Git 仓库 | 372.6 MB | ≤20 MB（历史清理后） |
+| Git 仓库 | 372.6 MB | ≤20 MB（实测 0.07 MB） |
 | 保存格式 | PNG 存成 JPEG | 格式正确、无损 |
 
 > **复测结果（2026-11-15，Phase 2/3 完成后）**：1080p 均值像素化 **97 ms**、频数像素化 **893 ms**、KMeans 聚类 **736 ms**（输出颜色数 16）；打包产物 **238.8 MB**（全新 headless 环境构建，原 504.9 MB）；打包后的程序启动验证通过，日志正常落盘。
+>
+> **工程化结果（Phase 4 进行中）**：`pyproject.toml` 可安装（`pip install -e ".[dev]"`）、`moge` 命令可用；`ruff check .` 0 error；**28** 项测试全部通过，`Moge.core` 覆盖率 **98.33%**；GitHub Actions 已配置 lint / test（3.9+3.11）/ build / pip-audit 四个作业。
 
 ---
 
@@ -284,12 +286,13 @@ def img_pixelize_mean(img, bs):
 
 预期产物：**505 MB → 238.8 MB（已实测）**。成本：M（需回归验证）。
 
-### M2 Git 仓库卫生
+### M2 Git 仓库卫生 ✅ 已完成
 
-- `dist/`、`build/` 已被跟踪（1614 个文件），`.git` 372.6 MB；`.gitignore` 虽写了 `dist/`，但对已跟踪文件无效。
-- `.gitattributes` 仅对 `cv2.pyd` 配了 LFS，`dist` 内其余二进制未覆盖。
-
-处理：`git rm -r --cached dist build` 并提交；后续禁止提交产物。若必须瘦身历史，使用 `git filter-repo`/BFG（**破坏性操作**，需先备份分支并团队同步）。成本：S（去跟踪）/ M（清历史）。
+- 原状态：`dist/`、`build/` 被跟踪（1614 个文件），`.git` 372.6 MB；`.gitignore` 虽写了 `dist/`，但对已跟踪文件无效。
+- 处理结果：`git rm -r --cached` 取消跟踪（跟踪文件降至 17 个）；`git filter-repo` 重写历史移除 `dist/build/__pycache__/logs`；`git lfs prune` 清理孤立 LFS 对象；`git gc` 后 `.git` 降至 **0.07 MB**，提交哈希已改变。
+- 已 `force-push origin/main`，远端与本地 HEAD 均为 `0d66293`。
+- 旧历史完整备份：`C:\Users\MSIPC\AppData\Local\Temp\Moge_pre_rewrite.bundle`（281 MB，确认远端无误后可删除）。
+- 影响：其他克隆需重新 clone 或 `git fetch && git reset --hard origin/main`；`.gitattributes` 中旧的 `dist/...cv2.pyd` LFS 规则已无匹配文件，可在后续提交中移除。
 
 ### M3 依赖可复现性
 
@@ -452,9 +455,9 @@ utils/
 - 处理过程中窗口可拖动、进度条递增、取消 ≤ 300 ms 生效、无"未响应"；
 - 向量化结果与原实现逐像素一致（允许聚类因采样有 ≤1% 像素差异，需在报告中说明）。
 
-### Phase 3 — 体积与依赖 ✅ 已完成（历史清理待决策）
+### Phase 3 — 体积与依赖 ✅ 已完成
 
-> 状态（2026-11-15）：已移除 sklearn/scipy 代码依赖；`environment.yml` 精简为 numpy + opencv-python-headless + PyQt5 + PyInstaller；`Moge.spec` 增加 `excludes` 并关闭 UPX。在**全新 venv** 中安装最小依赖后：功能/性能验证全部通过，构建产物 **238.8 MB / 216 文件**（原 504.9 MB，下降 53%），打包后可正常启动。已取消跟踪 `dist/`、`build/`、`__pycache__`、日志（跟踪文件从 1614 降至 14）。仅剩 Git 历史重写（破坏性，需单独确认）。
+> 状态（2026-11-15）：已移除 sklearn/scipy 代码依赖；`environment.yml` 精简为 numpy + opencv-python-headless + PyQt5 + PyInstaller；`Moge.spec` 增加 `excludes` 并关闭 UPX。在**全新 venv** 中安装最小依赖后：功能/性能验证全部通过，构建产物 **238.8 MB / 216 文件**（原 504.9 MB，下降 53%），打包后可正常启动。Git 侧已取消跟踪产物、重写历史并强制推送：跟踪文件 1614 → 17，`.git` 372.6 MB → **0.07 MB**（备份见 M2）。
 
 1. 聚类替换为 `cv2.kmeans`/PIL（保留花籽参数语义）。
 2. 移除 sklearn/scipy/pandas/matplotlib/seaborn 等。
@@ -467,7 +470,9 @@ utils/
 - 在新机器（无 conda 缓存）按 README 可完成构建；
 - `git ls-files | wc -l` 不含产物文件。
 
-### Phase 4 — 工程化与长期维护
+### Phase 4 — 工程化与长期维护 🟡 进行中
+
+> 状态（2026-11-15）：✅ `pyproject.toml`（依赖、入口、ruff/pytest 配置）、`tests/`（28 项）、`.github/workflows/ci.yml`（lint + test 3.9/3.11 + build + pip-audit）、README 已完成并在本地验证（ruff 0 error，core 覆盖率 98.33%）。⏳ 待办：工作流需提交并推送后才会在 GitHub 触发；本机无 Python 3.11，3.11 兼容性由 CI 矩阵验证；类型提示、pre-commit、架构文档可后续迭代。
 
 1. `pyproject.toml` + 锁定依赖；Python 3.11 验证分支。
 2. `ruff`/`black`/`pytest`/`pre-commit` + CI（lint + test + build + pip-audit）。
@@ -505,7 +510,7 @@ utils/
 | 响应性 | 主线程阻塞 | 全程 | 无 >100 ms 阻塞 | 事件循环心跳计时 |
 | 响应性 | 取消延迟 | 不可取消 | ≤300 ms | 自动化点击 |
 | 体积 | 产物 | 504.9 MB | ≤250 MB | 目录求和 |
-| 仓库 | 跟踪文件/体积 | 1614 / 372.6 MB | 无产物 / ≤20 MB | `git ls-files`、`.git` 求和 |
+| 仓库 | 跟踪文件/体积 | 1614 / 372.6 MB | 17 / 0.07 MB | `git ls-files`、`.git` 求和 |
 | 质量 | lint / 测试 | 无 | ruff 0 error；core 覆盖率 ≥80% | CI |
 | 安全 | 依赖漏洞 | 未扫描 | 无 high/critical | `pip-audit` |
 | 安全 | 输入上限 | 无 | 超限友好拒绝 | 单测（超大尺寸伪造头） |

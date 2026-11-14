@@ -7,9 +7,23 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PyQt5.QtCore import Qt, QThread
-from PyQt5.QtGui import QPixmap, QImage
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QMainWindow, QLabel, QFrame, QVBoxLayout, QGroupBox, QPushButton, \
-    QFormLayout, QSpinBox, QComboBox, QFileDialog, QMessageBox, QProgressDialog
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from Moge.core.image_processor import ResizeMode
 from Moge.core.models import PixelMethod, ProcessingParams
@@ -114,7 +128,7 @@ class MainWindow(QMainWindow):
             self.btn_process = QPushButton("执行处理")  # 创建处理按钮
             control_layout.addWidget(self.btn_process)  # 添加处理按钮到布局
 
-        except Exception as e:
+        except Exception:
             logger.critical("UI初始化失败", exc_info=True)
             raise
 
@@ -194,7 +208,7 @@ class MainWindow(QMainWindow):
             encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3] if codec == ".png" else [cv2.IMWRITE_JPEG_QUALITY, 95]
             ok, encoded = cv2.imencode(codec, save_img, encode_params)
             if not ok:
-                raise IOError(f"图像编码失败：{codec}")
+                raise OSError(f"图像编码失败：{codec}")
 
             encoded.tofile(path)
 
@@ -236,7 +250,7 @@ class MainWindow(QMainWindow):
 
             logger.info(f"画布已更新显示 {w}x{h} 图像")
 
-        except Exception as e:
+        except Exception:
             logger.error("显示图片时发生异常", exc_info=True)
             self.canvas.setText("图片显示错误！")
 

@@ -10,11 +10,11 @@ _PACKAGE_PARENT = str(Path(__file__).resolve().parent.parent)
 if _PACKAGE_PARENT not in sys.path:
     sys.path.insert(0, _PACKAGE_PARENT)
 
-from PyQt5.QtNetwork import QLocalServer, QLocalSocket
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtNetwork import QLocalServer, QLocalSocket  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from Moge.utils.logger_config import configure_logger
-from Moge.ui.main_window import MainWindow
+from Moge.ui.main_window import MainWindow  # noqa: E402
+from Moge.utils.logger_config import configure_logger  # noqa: E402
 
 
 class SingleInstanceGuard:
