@@ -29,7 +29,7 @@
 
 > **复测结果（2026-11-15，Phase 2/3 完成后）**：1080p 均值像素化 **97 ms**、频数像素化 **893 ms**、KMeans 聚类 **736 ms**（输出颜色数 16）；打包产物 **238.8 MB**（全新 headless 环境构建，原 504.9 MB）；打包后的程序启动验证通过，日志正常落盘。
 >
-> **工程化结果（Phase 4 进行中）**：`pyproject.toml` 可安装（`pip install -e ".[dev]"`）、`moge` 命令可用；`ruff check .` 0 error；**28** 项测试全部通过，`Moge.core` 覆盖率 **98.33%**；GitHub Actions 已配置 lint / test（3.9+3.11）/ build / pip-audit 四个作业。
+> **工程化结果（Phase 4 进行中）**：`pyproject.toml` 可安装（`pip install -e ".[dev]"`）、`moge` 命令可用；`ruff check .` 0 error；**28** 项测试全部通过，`Moge.core` 覆盖率 **98.33%**；GitHub Actions 已运行通过（run 43617309685）：Ruff、Python 3.9/3.11 测试、PyInstaller 构建、依赖审计全部通过。
 
 ---
 
@@ -472,7 +472,7 @@ utils/
 
 ### Phase 4 — 工程化与长期维护 🟡 进行中
 
-> 状态（2026-11-15）：✅ `pyproject.toml`（依赖、入口、ruff/pytest 配置）、`tests/`（28 项）、`.github/workflows/ci.yml`（lint + test 3.9/3.11 + build + pip-audit）、README 已完成并在本地验证（ruff 0 error，core 覆盖率 98.33%）。⏳ 待办：工作流需提交并推送后才会在 GitHub 触发；本机无 Python 3.11，3.11 兼容性由 CI 矩阵验证；类型提示、pre-commit、架构文档可后续迭代。
+> 状态（2026-11-15）：✅ `pyproject.toml`（依赖、入口、ruff/pytest 配置）、`tests/`（28 项）、`.github/workflows/ci.yml`、README 已完成。CI 已推送并运行通过（run 43617309685）：Ruff、Test 3.9、Test 3.11、Build package（体积检查 + 产物上传）、Dependency audit 全部通过；Python 3.11 兼容性已确认。⏳ 可选后续：类型提示、pre-commit、CHANGELOG/发布流程。
 
 1. `pyproject.toml` + 锁定依赖；Python 3.11 验证分支。
 2. `ruff`/`black`/`pytest`/`pre-commit` + CI（lint + test + build + pip-audit）。
