@@ -26,11 +26,12 @@
 
 | 版本 | 官方 tag | 方块总数 | 完整 | 不完整 | 贴图 | 缺失纹理 | 来源 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1.20.0 | v1.20.0.1 | 714 | 681 | 33 | 577 | 57 | GitHub tag 源码归档 |
 | 1.20.80 | v1.20.80.5 | 867 | 854 | 13 | 716 | 25 | GitHub tag 源码归档 |
+| 1.21.0 | v1.21.0.3 | 953 | 939 | 14 | 772 | 32 | GitHub tag 源码归档 |
 | 1.21.50 | v1.21.50.7 | 1099 | 1084 | 15 | 809 | 33 | GitHub tag 源码归档 |
-| 1.20.0 | v1.20.0.1 | — | — | — | — | — | 可用（dry-run 已验证），未下载 |
-| 1.21.0 | v1.21.0.3 | — | — | — | — | — | 可用（dry-run 已验证），未下载 |
 
+- 4 个目标 Bedrock 版本均已实际下载、解析并写入数据库。
 - 目标 Release 的 GitHub **资产列表为空**；因此回退到同一官方 tag 的源码归档，内容包含完整 `resource_pack`。
 - 该回退没有上游资产摘要；程序下载后计算 SHA-256 并写入数据库，`verify --full` 可校验本地一致性，但无法与官方摘要比对。这是本报告明确记录的限制。
 - Bedrock 解析使用 `terrain_texture.json` + `resource_pack/blocks.json` + 纹理目录；新版本若存在 `blocks/*.json` 材质定义则优先使用。
@@ -38,8 +39,8 @@
 
 ### 索引与缓存
 
-- 数据库：7 个版本、6139 个方块记录、2107 张贴图特征、DB 5.48 MB。
-- 本地缓存：**286.5 MB / 2125 个文件**（JAR、Bedrock ZIP、内容寻址 PNG、数据库、版本元数据）。
+- 数据库：**9 个版本、7806 个方块记录、2110 张贴图特征、DB 6.85 MB**。
+- 本地缓存：**462.4 MB**（JAR、Bedrock ZIP、内容寻址 PNG、数据库、版本元数据）。
 - 贴图按 SHA-256 去重；同一 PNG 只保存一份。
 - `verify --edition java --version 1.20.1 --full`：检查 4035 个面引用，全部存在，结果 `ok=true`。
 
@@ -111,7 +112,7 @@ python -m Moge.core.resources.cli report --output docs/minecraft-resource-report
 
 1. **Bedrock 无官方资产摘要**：目标 Release 无附件，只能使用官方 tag 源码归档；本地 SHA-256 只能证明缓存未变，不能证明与官方发布字节一致。
 2. **无自动重试无限循环**：网络请求最多 3 次重试；失败版本记录 `failed`，继续处理其他版本。
-3. **Bedrock 安装包/版本覆盖**：仅验证 1.20.80 与 1.21.50；1.20.0/1.21.0 已确认可用但未下载，避免进一步占用缓存。
+3. **Bedrock 安装包/版本覆盖**：4 个目标版本 1.20.0、1.20.80、1.21.0、1.21.50 均已下载解析；未覆盖其它历史版本。
 4. **Java 不完整方块**：技术方块、复杂模型、无 elements 模型未强行猜测，保持 incomplete。
 5. **染色/动画**：记录 tint 与动画标记，但未做生物群系染色、动画帧、透明叠底的真实渲染。
 6. **Bedrock 面定义**：使用 `blocks.json`/材质实例的纹理键；未解析完整几何与多面模型。
@@ -124,7 +125,7 @@ python -m Moge.core.resources.cli report --output docs/minecraft-resource-report
 2. 连通性：Mojang manifest 923 个版本、Bedrock Releases API 可读。
 3. 实现核心：下载/哈希/断点续传、安全 ZIP、SQLite、颜色特征、Java/Bedrock 解析、CLI。
 4. 修复：`minecraft:` 命名空间、Alpha 贴图 reshape、UTF-8 BOM、JSONC 注释、1.12 无前缀模型、Bedrock `blocks.json` 回退。
-5. 端到端：Java 5 版本、Bedrock 2 版本真实下载解析；`verify` 4035 面通过。
+5. 端到端：Java 5 版本、Bedrock 4 版本真实下载解析；`verify` 4035 面通过。
 6. GUI：真实候选集、资源管理对话框、后台 Worker 进度/取消；打包与启动验证。
 7. 回归：117 项测试、83% 覆盖率、ruff 0、PyInstaller 241.2 MB。
 

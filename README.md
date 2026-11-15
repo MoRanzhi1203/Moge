@@ -42,7 +42,7 @@ moge
 
 ### Minecraft 资源包
 
-- Java 版与 Bedrock 版可在 GUI 的“版本资源管理”中一键获取；资源缓存在 `%LOCALAPPDATA%\Moge\resources`，不进入 Git 仓库。
+- 已实测 Java 1.12.2 / 1.16.5 / 1.18.2 / 1.20.1 / 1.21.4 与 Bedrock 1.20.0 / 1.20.80 / 1.21.0 / 1.21.50；数据保存在 `%LOCALAPPDATA%\Moge\resources`，不进入 Git 仓库。
 - 命令行入口：
 
 ```powershell
