@@ -16,6 +16,12 @@ def _entry_extra(entry) -> dict:
         "series": meta.get("series", ""),
         "code": meta.get("code", ""),
         "category": meta.get("category", ""),
+        "size": meta.get("size", ""),
+        "color_family": meta.get("color_family", ""),
+        "material": meta.get("material", ""),
+        "trust": meta.get("trust", ""),
+        "license": meta.get("license", ""),
+        "source_url": meta.get("source_url", ""),
         "source": entry.source,
     }
 
@@ -50,7 +56,10 @@ def export_materials_csv(result: RenderResult, path: str) -> str:
         target = target.with_suffix(".csv")
 
     rows = material_rows(result)
-    fields = ["id", "name", "hex", "rgb", "count", "packs", "brand", "series", "code", "category", "source"]
+    fields = [
+        "id", "name", "hex", "rgb", "count", "packs", "brand", "series", "code",
+        "category", "size", "color_family", "material", "trust", "license", "source_url", "source",
+    ]
     with target.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()

@@ -19,6 +19,41 @@ from Moge.core.resources.paths import (
 
 JAVA_TARGETS = ("1.12.2", "1.16.5", "1.18.2", "1.20.1", "1.21.4")
 
+RESOURCE_STATES = (
+    "UNAVAILABLE",
+    "DOWNLOADING",
+    "VERIFYING",
+    "PARSING",
+    "PARTIAL",
+    "READY",
+    "CORRUPTED",
+)
+
+_STATUS_MAP = {
+    "not-downloaded": "UNAVAILABLE",
+    "not-available": "UNAVAILABLE",
+    "pending": "UNAVAILABLE",
+    "downloading": "DOWNLOADING",
+    "verifying": "VERIFYING",
+    "parsing": "PARSING",
+    "partial": "PARTIAL",
+    "ready": "READY",
+    "failed": "CORRUPTED",
+    "corrupted": "CORRUPTED",
+}
+
+
+def normalize_status(status: str) -> str:
+    """ 将索引库内部状态映射为对外的七态枚举 """
+    return _STATUS_MAP.get(str(status).lower(), "UNAVAILABLE")
+
+
+def _failure_state(exc: Exception) -> str:
+    text = str(exc).lower()
+    if any(key in text for key in ("sha", "校验", "hash", "mismatch", "size")):
+        return "corrupted"
+    return "failed"
+
 
 class ResourceManager:
     """ CLI 与 GUI 共用的资源管理核心 """
@@ -57,6 +92,7 @@ class ResourceManager:
                     "version_type": entry.get("type", ""),
                     "url": entry.get("url", ""),
                     "status": row.get("status", "not-downloaded"),
+                    "state": normalize_status(row.get("status", "not-downloaded")),
                     "blocks": self.db.block_count(int(row["id"])) if row.get("id") else 0,
                 }
             )
@@ -108,6 +144,7 @@ class ResourceManager:
         try:
             if progress:
                 progress(1, f"准备 Java {version}")
+            self.db.set_status(version_id, "verifying", "")
             jar_path, jar_sha, origin = java.ensure_client_jar(
                 version,
                 metadata,
@@ -120,6 +157,7 @@ class ResourceManager:
             )
             if progress:
                 progress(45, "解析 blockstate / model / texture")
+            self.db.set_status(version_id, "parsing", "")
             stats = java.parse_client_jar(
                 jar_path,
                 version_id,
@@ -140,7 +178,7 @@ class ResourceManager:
                 progress(100, "Java 资源索引完成")
             return {"edition": "java", "version": version, "status": status, "jar": str(jar_path), **stats}
         except Exception as exc:
-            self.db.set_status(version_id, "failed", str(exc))
+            self.db.set_status(version_id, _failure_state(exc), str(exc))
             raise
 
     def resolve_java_range(self, from_version: str, to_version: str, release_only: bool = True) -> list[str]:
@@ -176,6 +214,7 @@ class ResourceManager:
                     "version_type": "release",
                     "tag": release.get("tag_name", "") if release else "",
                     "status": row.get("status", "not-available" if release is None else "not-downloaded"),
+                    "state": normalize_status(row.get("status", "not-available" if release is None else "not-downloaded")),
                     "blocks": self.db.block_count(int(row["id"])) if row.get("id") else 0,
                 }
             )
@@ -207,6 +246,7 @@ class ResourceManager:
         try:
             if progress:
                 progress(2, f"查询 Bedrock {version} Release")
+            self.db.set_status(version_id, "downloading", "")
             stats = bedrock.fetch_and_parse(
                 version,
                 version_id,
@@ -231,7 +271,7 @@ class ResourceManager:
                 progress(100, "Bedrock 资源索引完成")
             return {"edition": "bedrock", "version": version, "status": status, **stats}
         except Exception as exc:
-            self.db.set_status(version_id, "failed", str(exc))
+            self.db.set_status(version_id, _failure_state(exc), str(exc))
             raise
 
     # ---------- 查询/维护 ---------- #
@@ -262,9 +302,18 @@ class ResourceManager:
                     visible_face=row["visible_face"],
                     source="mojang-resource",
                     note=row["notes"] or "真实贴图",
+                    geometry=row.get("geometry") or "unknown",
+                    block_state=row.get("block_state") or "",
+                    texture_sha256=face.get("sha256", ""),
+                    texture_path=face.get("path", ""),
+                    verified=bool(row.get("verified")),
                 )
             )
         return blocks
+
+    def coverage(self, edition: str, version: str) -> dict:
+        """ 原版资源覆盖率（分子/分母明确） """
+        return self.db.block_coverage(edition, version)
 
     def texture_preview_path(self, sha256: str) -> Optional[str]:
         return self.db.texture_path(sha256)
@@ -277,7 +326,7 @@ class ResourceManager:
         checked = 0
         for block in self.db.get_blocks(edition, version):
             for face in block["faces"].values():
-                path = self.db.texture_path(face["sha256"])
+                path = face.get("path") or self.db.texture_path(face["sha256"])
                 checked += 1
                 if not path or not Path(path).exists():
                     missing.append(face["sha256"])
@@ -285,7 +334,18 @@ class ResourceManager:
             sha1, sha256 = file_hashes(Path(row["resource_path"]))
             if row["resource_sha256"] and sha256 != row["resource_sha256"]:
                 missing.append("resource-sha256-mismatch")
-        return {"checked_faces": checked, "missing": sorted(set(missing)), "ok": not missing}
+        state = normalize_status(row["status"])
+        if missing and state == "READY":
+            state = "CORRUPTED"
+        return {
+            "edition": edition,
+            "version": version,
+            "state": state,
+            "checked_faces": checked,
+            "missing": sorted(set(missing)),
+            "coverage": self.db.block_coverage(edition, version),
+            "ok": not missing,
+        }
 
     def delete(self, edition: str, version: str) -> dict:
         row = self.db.get_version(edition, version)
@@ -333,6 +393,7 @@ class ResourceManager:
                     "edition": row["edition"],
                     "version": row["version"],
                     "status": row["status"],
+                    "state": normalize_status(row["status"]),
                     "blocks": row["blocks"],
                     "source": row["source"],
                     "error": row["error"],

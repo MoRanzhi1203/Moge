@@ -68,15 +68,35 @@ def build_config(spec: GridSpec, settings: dict[str, object]) -> PipelineConfig:
     )
 
 
-def _real_blocks(edition: str, version: str) -> list:
-    """ 尝试从本地资源库加载真实方块；失败或未下载返回空列表 """
+_REAL_CATALOG_CACHE: dict = {}
+
+
+def _real_catalog(edition: str, version: str) -> tuple[list, dict]:
+    """ 尝试从本地资源库加载真实方块与覆盖率；按数据库更新时间缓存 """
     try:
+        from Moge.core.resources.paths import database_path
+
+        database = database_path()
+        if not database.exists():
+            return [], {}
+        stat = database.stat()
+        key = (str(database), edition, version, stat.st_mtime_ns, stat.st_size)
+        cached = _REAL_CATALOG_CACHE.get(key)
+        if cached is not None:
+            return cached
+
         from Moge.core.resources.manager import ResourceManager
 
         with ResourceManager() as manager:
-            return manager.build_catalog(edition, version)
+            blocks = manager.build_catalog(edition, version)
+            coverage = manager.coverage(edition, version)
+        payload = (blocks, coverage)
+        if len(_REAL_CATALOG_CACHE) >= 4:
+            _REAL_CATALOG_CACHE.clear()
+        _REAL_CATALOG_CACHE[key] = payload
+        return payload
     except Exception:
-        return []
+        return [], {}
 
 
 def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
@@ -95,19 +115,29 @@ def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
             raise ValueError(f"未索引的 Minecraft 版本：{version}")
     max_cost = settings.get("max_cost_tier")
     resource_mode = str(settings.get("resource_mode", "auto"))
+    buildable_only = bool(settings.get("buildable_only", True))
     base_blocks = None
+    has_geometry = False
     if resource_mode in ("auto", "real"):
-        real = _real_blocks(edition, version)
+        real, _coverage = _real_catalog(edition, version)
         if real:
             base_blocks = real
+            has_geometry = any(block.geometry == "full_cube" for block in real)
         elif resource_mode == "real":
             raise ValueError(f"{edition} {version} 的真实资源尚未下载，请在“版本资源管理”中获取")
+    # 仅在确有模型几何数据时启用完整立方体硬性筛选
+    if base_blocks is not None and has_geometry and buildable_only:
+        geometry_rule: Optional[bool] = True
+    elif base_blocks is not None and not buildable_only:
+        geometry_rule = False
+    else:
+        geometry_rule = None
     return filter_blocks(
         version=version,
         edition=edition,
         categories=settings.get("categories") or None,
         obtainability=str(settings.get("obtainability", "any")),
-        buildable_only=bool(settings.get("buildable_only", True)),
+        buildable_only=buildable_only,
         max_cost_tier=int(max_cost) if max_cost is not None else None,
         included_ids=settings.get("included_ids") or None,
         excluded_ids=settings.get("excluded_ids") or None,
@@ -115,6 +145,7 @@ def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
         exclude_transparent=bool(settings.get("exclude_transparent", False)),
         exclude_gravity=bool(settings.get("exclude_gravity", False)),
         blocks=base_blocks,
+        require_full_cube=geometry_rule,
     )
 
 
@@ -132,6 +163,10 @@ def stage_map_materials(context: PipelineContext):
 
     context.report(0.2, "正在匹配方块颜色")
     overrides = settings.get("texture_overrides") or {}
+    edition = str(settings.get("edition", "java"))
+    version = str(settings.get("version", "1.20.1"))
+    real_candidates = [block for block in candidates if block.source == "mojang-resource"]
+    coverage = _real_catalog(edition, version)[1] if real_candidates else {}
 
     def block_color(block: MinecraftBlock):
         value = overrides.get(block.block_id, block.rgb)
@@ -159,8 +194,13 @@ def stage_map_materials(context: PipelineContext):
                 "gravity": block.gravity,
                 "orientation": block.orientation,
                 "visible_face": block.visible_face,
+                "geometry": block.geometry,
+                "block_state": block.block_state,
+                "texture_sha256": block.texture_sha256,
+                "texture_path": block.texture_path,
+                "verified": block.verified,
                 "texture": (
-                    "real" if block.source == "mojang-resource"
+                    "real" if block.source == "mojang-resource" and block.texture_path
                     else ("user-average" if block.block_id in overrides else "approximate")
                 ),
             },
@@ -175,8 +215,15 @@ def stage_map_materials(context: PipelineContext):
             kind="minecraft",
             category=block.category,
             source="user-resource-pack" if block.block_id in overrides else block.source,
-            verified=False,
-            meta={"version": settings.get("version"), "edition": settings.get("edition")},
+            verified=block.verified,
+            meta={
+                "version": version,
+                "edition": edition,
+                "block_state": block.block_state,
+                "geometry": block.geometry,
+                "texture_sha256": block.texture_sha256,
+                "texture_path": block.texture_path,
+            },
         )
         for block in candidates
     ]
@@ -191,10 +238,34 @@ def stage_map_materials(context: PipelineContext):
     matched_rgb = palette_rgb[indices[::step]]
     deltas = delta_e_00(srgb_to_lab(pixels[::step]), srgb_to_lab(matched_rgb))
 
+    has_real = bool(real_candidates)
+    renderable = sum(1 for block in candidates if block.texture_path and block.verified)
+    pack_hits = sum(1 for block in candidates if block.block_id in overrides)
+    vanilla_numerator = int(coverage.get("textured_blocks", 0)) if has_real else 0
+    vanilla_denominator = int(coverage.get("total_blocks", 0)) if has_real else 0
+    vanilla_coverage = {
+        "numerator": vanilla_numerator,
+        "denominator": vanilla_denominator,
+        "ratio": (vanilla_numerator / vanilla_denominator) if vanilla_denominator else 0.0,
+        "label": "原版资源覆盖率",
+    }
+    renderable_coverage = {
+        "numerator": renderable,
+        "denominator": len(candidates),
+        "ratio": (renderable / len(candidates)) if candidates else 0.0,
+        "label": "可渲染候选覆盖率",
+    }
+    pack_coverage = {
+        "numerator": pack_hits,
+        "denominator": len(candidates),
+        "ratio": (pack_hits / len(candidates)) if candidates else 0.0,
+        "label": "附加资源包覆盖率",
+    }
+
     context.stats.update(
         {
-            "version": settings.get("version"),
-            "edition": settings.get("edition"),
+            "version": version,
+            "edition": edition,
             "candidate_blocks": len(candidates),
             "block_types": len(used_ids),
             "legal_rate": 1.0,
@@ -202,14 +273,18 @@ def stage_map_materials(context: PipelineContext):
             "p95_delta_e00": float(np.percentile(deltas, 95)),
             "texture_overrides": len(overrides),
             "texture_pack": settings.get("texture_pack_name") or "",
-            "resource_source": (
-                "mojang-resource" if any(block.source == "mojang-resource" for block in candidates)
-                else "builtin-approx"
-            ),
+            "resource_source": "mojang-resource" if has_real else "builtin-approx",
+            "vanilla_coverage": vanilla_coverage,
+            "renderable_coverage": renderable_coverage,
+            "pack_coverage": pack_coverage,
+            "full_cube_blocks": int(coverage.get("full_cube_blocks", 0)),
+            "verified_blocks": int(coverage.get("verified_blocks", 0)),
+            "geometry_known": bool(coverage.get("full_cube_blocks", 0)),
             "note": (
-                f"使用 Mojang 官方资源包解析的真实贴图（{settings.get('edition')} {settings.get('version')}）；"
-                "获取条件仍来自近似元数据，未逐一验证。"
-                if any(block.source == "mojang-resource" for block in candidates)
+                f"使用 Mojang 官方 {edition} {version} 资源解析的真实贴图；"
+                f"原版覆盖 {vanilla_numerator}/{vanilla_denominator}，"
+                f"候选贴图 {renderable}/{len(candidates)}。获取条件仍来自近似元数据，未逐一验证。"
+                if has_real
                 else DISPLAY_NOTE
             ) + (
                 f" 已加载用户资源包 {settings.get('texture_pack_name') or ''} 的 {len(overrides)} 个贴图（平均色）。"

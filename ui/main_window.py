@@ -7,7 +7,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QSettings, QSize, Qt, QThread
+from PyQt5.QtCore import QSettings, QSize, Qt, QThread, QTimer
 from PyQt5.QtGui import QColor, QIcon, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
@@ -41,7 +41,18 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from Moge.core.beads.catalog import (
+    available_families,
+    available_materials,
+    available_sizes,
+    load_catalog_with_meta,
+    material_label,
+    nearest_cross_brand,
+    preferred_selection,
+    trust_label,
+)
 from Moge.core.clustering import ALGORITHM_INFO, EXPERIMENTAL_ALGORITHMS
+from Moge.core.document import GridDocument
 from Moge.core.grid import isolated_cells, render_grid
 from Moge.core.materials import (
     BEAD_CATALOG,
@@ -84,9 +95,11 @@ class MainWindow(QMainWindow):
         self.mode = "pixel"
         self.mode_settings = {mode: registry.default_settings(mode) for mode, _ in registry.mode_options()}
         self.results = {}
-        self.undo_stack = {mode: [] for mode, _ in registry.mode_options()}
-        self.redo_stack = {mode: [] for mode, _ in registry.mode_options()}
-        self.bead_catalog = list(BEAD_CATALOG)
+        self.documents = {}
+        self.interaction_mode = "view"
+        self.preview_style = "solid"
+        self.selection_anchor = None
+        self.bead_catalog, self.bead_palette_meta = self._load_bead_palette()
         self.bead_inventory_map = {}
         self.mc_texture_overrides = {}
         self.mc_texture_pack_name = ""
@@ -100,6 +113,15 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._busy_actions = []
         self._theme = str(self.settings.value("theme", "dark"))
+        self._icon_cache = {}
+        self._side_timer = QTimer(self)
+        self._side_timer.setSingleShot(True)
+        self._side_timer.setInterval(120)
+        self._side_timer.timeout.connect(self._flush_side_panels)
+        self._palette_timer = QTimer(self)
+        self._palette_timer.setSingleShot(True)
+        self._palette_timer.setInterval(150)
+        self._palette_timer.timeout.connect(self._refresh_palette)
 
         self._build_ui()
         self._build_actions()
@@ -110,6 +132,16 @@ class MainWindow(QMainWindow):
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
+
+    @staticmethod
+    def _load_bead_palette():
+        """ 优先读取 SQLite 色卡库，缺失时回退内置近似色卡 """
+        try:
+            catalog, meta = load_catalog_with_meta()
+        except Exception:
+            logger.warning("读取拼豆色卡数据库失败，回退内置色卡", exc_info=True)
+            return list(BEAD_CATALOG), {}
+        return (catalog or list(BEAD_CATALOG)), meta
 
     # ---------- UI ---------- #
     def _build_ui(self):
@@ -398,17 +430,26 @@ class MainWindow(QMainWindow):
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.bead_brand = QComboBox()
         self.bead_series = QComboBox()
+        self.bead_size = QComboBox()
+        self.bead_family = QComboBox()
+        self.bead_material = QComboBox()
         self.btn_import_beads = QPushButton("导入色卡 CSV...")
         self.bead_catalog_note = QLabel("内置近似色卡，未验证")
         self.bead_catalog_note.setWordWrap(True)
+        self.bead_source_note = QLabel("")
+        self.bead_source_note.setWordWrap(True)
         self.bead_inventory = QLineEdit()
         self.bead_inventory.setPlaceholderText("库存色号，逗号分隔；留空=全部")
         self.bead_disabled = QLineEdit()
         self.bead_disabled.setPlaceholderText("禁用色号，逗号分隔")
         form.addRow("品牌:", self.bead_brand)
         form.addRow("系列:", self.bead_series)
+        form.addRow("尺寸:", self.bead_size)
+        form.addRow("色系:", self.bead_family)
+        form.addRow("材质:", self.bead_material)
         form.addRow("", self.btn_import_beads)
         form.addRow("", self.bead_catalog_note)
+        form.addRow("", self.bead_source_note)
         form.addRow("库存:", self.bead_inventory)
         form.addRow("禁用:", self.bead_disabled)
         layout.addWidget(mode_group)
@@ -470,6 +511,34 @@ class MainWindow(QMainWindow):
         toolbar.addActions([self.act_undo, self.act_redo])
         toolbar.addSeparator()
 
+        # 查看/编辑模式切换：查看模式不允许修改网格
+        self.mode_group = QActionGroup(self)
+        self.mode_group.setExclusive(True)
+        self.act_view_mode = QAction("查看模式", self)
+        self.act_view_mode.setCheckable(True)
+        self.act_view_mode.setChecked(True)
+        self.act_edit_mode = QAction("编辑模式", self)
+        self.act_edit_mode.setCheckable(True)
+        self.act_edit_mode.setShortcut(QKeySequence("Ctrl+E"))
+        for action, key in ((self.act_view_mode, "view"), (self.act_edit_mode, "edit")):
+            action.setData(key)
+            self.mode_group.addAction(action)
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+
+        self.preview_group = QActionGroup(self)
+        self.preview_group.setExclusive(True)
+        self.act_preview_solid = QAction("纯色预览", self)
+        self.act_preview_solid.setCheckable(True)
+        self.act_preview_solid.setChecked(True)
+        self.act_preview_texture = QAction("真实纹理预览", self)
+        self.act_preview_texture.setCheckable(True)
+        for action, key in ((self.act_preview_solid, "solid"), (self.act_preview_texture, "texture")):
+            action.setData(key)
+            self.preview_group.addAction(action)
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+
         self.act_fit = QAction("适应窗口", self)
         self.act_fit.setShortcut(QKeySequence("F"))
         self.act_grid = QAction("显示网格", self)
@@ -519,6 +588,8 @@ class MainWindow(QMainWindow):
             ("pick", "吸管", "I"),
             ("erase", "橡皮擦", "E"),
             ("replace", "替换同类", "R"),
+            ("select", "矩形框选", "S"),
+            ("lock", "区域锁定", "L"),
         ):
             action = QAction(label, self)
             action.setCheckable(True)
@@ -528,6 +599,13 @@ class MainWindow(QMainWindow):
             edit_menu.addAction(action)
             self.tool_actions[key] = action
         self.tool_actions["paint"].setChecked(True)
+
+        edit_menu.addSeparator()
+        self.act_lock_selection = QAction("锁定/解锁选区", self)
+        self.act_lock_selection.setShortcut(QKeySequence("Ctrl+L"))
+        self.act_clear_selection = QAction("清除选区", self)
+        self.act_clear_selection.setShortcut(QKeySequence("Esc"))
+        edit_menu.addActions([self.act_lock_selection, self.act_clear_selection])
 
         view_menu = self.menuBar().addMenu("视图")
         view_menu.addActions([
@@ -557,6 +635,10 @@ class MainWindow(QMainWindow):
         self._connect_action(self.act_export_pdf, self.export_pdf_file)
         self._connect_action(self.act_undo, self.undo)
         self._connect_action(self.act_redo, self.redo)
+        self.mode_group.triggered.connect(self._on_interaction_mode_changed)
+        self.preview_group.triggered.connect(self._on_preview_style_changed)
+        self._connect_action(self.act_lock_selection, self.toggle_selection_lock)
+        self._connect_action(self.act_clear_selection, self.clear_selection)
         self._connect_action(self.act_fit, self.canvas_fit)
         self._connect_action(self.act_reset_view, self.canvas.reset_view)
         self._connect_action(self.act_locate, self.locate_cell)
@@ -581,15 +663,18 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_combo)
         self.canvas.strokeStarted.connect(self._on_stroke_started)
+        self.canvas.strokeFinished.connect(self._flush_side_panels)
         self.canvas.cellPressed.connect(self._on_cell_pressed)
         self.canvas.cellDragged.connect(self._on_cell_dragged)
         self.canvas.hoverCellChanged.connect(self._on_hover)
         self.canvas.zoomChanged.connect(self._on_zoom)
+        self.canvas.cellInspected.connect(self._on_cell_inspected)
         self.palette_list.currentRowChanged.connect(self._on_palette_selected)
-        self.palette_search.textChanged.connect(lambda _text: self._refresh_palette())
+        self.palette_search.textChanged.connect(lambda _text: self._palette_timer.start())
         self.palette_sort.currentIndexChanged.connect(lambda _index: self._refresh_palette())
         self.palette_used_only.toggled.connect(lambda _checked: self._refresh_palette())
         self.bead_brand.currentIndexChanged.connect(self._on_bead_brand_changed)
+        self.bead_series.currentIndexChanged.connect(self._on_bead_series_changed)
         self.bead_inventory.textEdited.connect(lambda _text: self.bead_inventory_map.clear())
         self.grid_width.valueChanged.connect(lambda _value: self._update_status())
         self.grid_height.valueChanged.connect(lambda _value: self._update_status())
@@ -609,6 +694,8 @@ class MainWindow(QMainWindow):
         self.palette_used_only.setChecked(self.mode == "beads")
         self.palette_used_only.blockSignals(False)
         self._apply_settings_to_panels(self.mode, self.mode_settings[self.mode])
+        self.selection_anchor = None
+        self._stroke_pending = False
         result = self.results.get(self.mode)
         if result is not None:
             self._display_result(result)
@@ -616,6 +703,7 @@ class MainWindow(QMainWindow):
             self._display_source()
         else:
             self.canvas.set_image(None)
+        self.canvas.set_interaction_mode(self.interaction_mode)
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
@@ -662,6 +750,9 @@ class MainWindow(QMainWindow):
         return {
             "brand": self.bead_brand.currentData(),
             "series": self.bead_series.currentData(),
+            "size_filter": self.bead_size.currentData() or "",
+            "family_filter": self.bead_family.currentData() or "",
+            "material_filter": self.bead_material.currentData() or "",
             "catalog": list(self.bead_catalog),
             "inventory_ids": inventory_ids,
             "disabled_ids": [item.strip() for item in self.bead_disabled.text().split(",") if item.strip()],
@@ -724,6 +815,12 @@ class MainWindow(QMainWindow):
                                 revision=str(item.get("revision", "1")),
                                 product_line=str(item.get("product_line", "")),
                                 verified=bool(item.get("verified", False)),
+                                size=str(item.get("size", "")),
+                                color_family=str(item.get("color_family", "")),
+                                material=str(item.get("material", "solid")),
+                                trust=str(item.get("trust", "unknown")),
+                                source_url=str(item.get("source_url", "")),
+                                license=str(item.get("license", "")),
                             )
                         )
                 self.bead_catalog = converted or self.bead_catalog
@@ -731,6 +828,10 @@ class MainWindow(QMainWindow):
             self._set_combo_data(self.bead_brand, settings.get("brand"))
             self._on_bead_brand_changed()
             self._set_combo_data(self.bead_series, settings.get("series"))
+            self._on_bead_series_changed()
+            self._set_combo_data(self.bead_size, settings.get("size_filter", ""))
+            self._set_combo_data(self.bead_family, settings.get("family_filter", ""))
+            self._set_combo_data(self.bead_material, settings.get("material_filter", ""))
             inventory = settings.get("inventory_ids") or []
             self.bead_inventory.setText(", ".join(item_id.split(":")[-1] for item_id in inventory))
             disabled = settings.get("disabled_ids") or []
@@ -817,9 +918,7 @@ class MainWindow(QMainWindow):
         self.original_img = np.array(pointer).reshape(height, width, 4).copy()
         self.source_path = path
         self.results.clear()
-        for mode in self.undo_stack:
-            self.undo_stack[mode].clear()
-            self.redo_stack[mode].clear()
+        self.documents.clear()
         self.selected_entry = 0
 
         target = 64
@@ -857,6 +956,8 @@ class MainWindow(QMainWindow):
             mode = document.mode
             settings = dict(self.mode_settings.get(mode, registry.default_settings(mode)))
             settings.update(document.settings.get("params", document.settings) or {})
+            if mode == "beads":
+                settings["catalog"] = list(self.bead_catalog)
             self.mode_settings[mode] = settings
             self.mode = mode
             self.mode_combo.blockSignals(True)
@@ -869,6 +970,8 @@ class MainWindow(QMainWindow):
 
             result = self._result_from_grid(document.grid, settings)
             self.results[mode] = result
+            self.selection_anchor = None
+            self._stroke_pending = False
             self._display_result(result)
             if self.original_img is None:
                 self.canvas.set_reference_image(None)
@@ -1127,9 +1230,33 @@ class MainWindow(QMainWindow):
         self._update_action_states()
 
     # ---------- 显示 ---------- #
+    def _current_document(self):
+        result = self._current_result()
+        if result is None:
+            return None
+        return self._sync_document(result)
+
+    def _sync_document(self, result: RenderResult) -> GridDocument:
+        """ 结果与文档共用同一份 labels，保证编辑、渲染、导出读取同一数据 """
+        document = self.documents.get(result.mode)
+        if document is None or getattr(document, "result_token", None) is not result:
+            document = GridDocument.from_result(result)
+            document.result_token = result
+            self.documents[result.mode] = document
+        result.grid.labels = document.labels
+        if self.mode == result.mode:
+            self.canvas.set_locked_mask(document.locked)
+            self.canvas.set_selection(document.selection)
+        return document
+
     def _display_result(self, result: RenderResult):
-        self.canvas.set_image(result.image, (result.grid.spec.width, result.grid.spec.height))
-        self.canvas.set_editable(True)
+        document = self._sync_document(result)
+        self.canvas.set_image(
+            document.render(self.preview_style),
+            (result.grid.spec.width, result.grid.spec.height),
+        )
+        self.canvas.set_editable(self.interaction_mode == "edit")
+        self._refresh_preview_actions()
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
@@ -1142,13 +1269,108 @@ class MainWindow(QMainWindow):
         height, width = self.original_img.shape[:2]
         self.canvas.set_image(self.original_img, (width, height))
         self.canvas.set_editable(False)
+        self.canvas.set_locked_mask(None)
+        self.canvas.set_selection(None)
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
 
+    # ---------- 查看/编辑与预览 ---------- #
+    def _on_interaction_mode_changed(self, action):
+        self.interaction_mode = "edit" if action.data() == "edit" else "view"
+        self.canvas.set_interaction_mode(self.interaction_mode)
+        editable = self.interaction_mode == "edit" and self._current_result() is not None
+        self.canvas.set_editable(editable)
+        for tool_action in self.tool_actions.values():
+            tool_action.setEnabled(self.interaction_mode == "edit")
+        self.selection_anchor = None
+        self._stroke_pending = False
+        self.clear_selection()
+        self._update_action_states()
+        self.lbl_status.setText(
+            "编辑模式：可修改网格数据" if self.interaction_mode == "edit"
+            else "查看模式：左键拖动平移，单击检查材料"
+        )
+
+    def _on_preview_style_changed(self, action):
+        style = "texture" if action.data() == "texture" else "solid"
+        if style == self.preview_style:
+            return
+        document = self._current_document()
+        if document is None:
+            return
+        if style == "texture" and not any(entry.meta.get("texture_path") for entry in document.entries):
+            self.preview_style = "solid"
+            self.act_preview_solid.setChecked(True)
+            self.lbl_status.setText("当前作品没有可用真实贴图，保持纯色预览")
+            return
+        self.preview_style = style
+        self._rerender_preview()
+        self.lbl_status.setText(
+            "真实纹理预览：仅改变渲染方式，材料统计不变" if style == "texture" else "已切换为纯色预览"
+        )
+
+    def _rerender_preview(self):
+        document = self._current_document()
+        if document is None:
+            return
+        self.canvas.set_image(
+            document.render(self.preview_style),
+            (document.spec.width, document.spec.height),
+        )
+
+    def _refresh_preview_actions(self):
+        document = self._current_document()
+        has_texture = bool(document) and any(entry.meta.get("texture_path") for entry in document.entries)
+        self.act_preview_texture.setEnabled(has_texture)
+
+    def _on_cell_inspected(self, col, row):
+        document = self._current_document()
+        if document is None:
+            return
+        value = int(document.labels[row, col])
+        if value < 0:
+            self.stats_view.setHtml(f"<h3>单元格 ({col}, {row})</h3><p>空单元（无材料）</p>")
+            self.right_tabs.setCurrentIndex(1)
+            return
+        entry = document.entries[value]
+        meta = entry.meta
+        lines = [
+            f"<h3>材料详情 ({col}, {row})</h3>",
+            f"<p><b>{entry.name}</b><br>ID：{entry.id}<br>颜色：{entry.rgb}<br>来源：{entry.source}</p>",
+        ]
+        if meta.get("geometry"):
+            lines.append(f"<p>几何：{meta.get('geometry')}<br>方块状态：{meta.get('block_state') or '-'}</p>")
+        if meta.get("texture_sha256"):
+            lines.append(
+                f"<p><b>真实贴图</b><br>SHA-256：{meta.get('texture_sha256')}<br>"
+                f"路径：{meta.get('texture_path')}<br>校验：{'通过' if meta.get('verified') else '未通过'}</p>"
+            )
+        if document.mode == "beads":
+            lines.append(
+                f"<p><b>品牌/系列</b>：{meta.get('brand')} / {meta.get('series')}<br>"
+                f"<b>色号</b>：{meta.get('code')}<br>"
+                f"<b>尺寸</b>：{meta.get('size') or '-'}<br>"
+                f"<b>色系/材质</b>：{meta.get('color_family') or '-'} / "
+                f"{material_label(str(meta.get('material') or 'solid'))}<br>"
+                f"<b>可信度</b>：{trust_label(str(meta.get('trust') or 'unknown'))}<br>"
+                f"<b>许可/来源</b>：{meta.get('license') or '-'} · {entry.source}</p>"
+            )
+            match = nearest_cross_brand(entry.rgb, self.bead_catalog, brand=str(meta.get("brand") or ""))
+            if match is not None:
+                other, distance = match
+                lines.append(
+                    f"<p><b>跨品牌近似参考</b>：{other.brand} {other.series} {other.code} "
+                    f"ΔE00={distance:.2f}（仅近似，不是同一色号）</p>"
+                )
+        self.stats_view.setHtml("".join(lines))
+        self.right_tabs.setCurrentIndex(1)
+        self.lbl_status.setText(f"({col}, {row}) {entry.name}")
+
     def _refresh_palette(self):
         if self._palette_building:
             return
+        self._palette_timer.stop()
         self._palette_building = True
         self.palette_list.blockSignals(True)
         self.palette_list.clear()
@@ -1183,8 +1405,15 @@ class MainWindow(QMainWindow):
             rows.sort(key=lambda row: (-row[2], row[1].name))
 
         for index, entry, count, _hue in rows:
-            pixmap = QPixmap(16, 16)
-            pixmap.fill(QColor(*entry.rgb))
+            key = tuple(entry.rgb)
+            icon = self._icon_cache.get(key)
+            if icon is None:
+                pixmap = QPixmap(16, 16)
+                pixmap.fill(QColor(*key))
+                icon = QIcon(pixmap)
+                if len(self._icon_cache) >= 512:
+                    self._icon_cache.clear()
+                self._icon_cache[key] = icon
             label = entry.name
             if result.mode == "minecraft":
                 texture = entry.meta.get("texture")
@@ -1195,8 +1424,16 @@ class MainWindow(QMainWindow):
                 else:
                     label += " [近似]"
             elif result.mode == "beads":
-                label = f"{entry.meta.get('code', '')} {entry.name}"
-            item = QListWidgetItem(QIcon(pixmap), f"{label}  ×{count}")
+                meta = entry.meta
+                badges = []
+                if meta.get("material") and meta.get("material") != "solid":
+                    badges.append(material_label(str(meta.get("material"))))
+                if meta.get("trust"):
+                    badges.append(trust_label(str(meta.get("trust"))))
+                label = f"{meta.get('code', '')} {entry.name}"
+                if badges:
+                    label += " [" + "/".join(badges) + "]"
+            item = QListWidgetItem(icon, f"{label}  ×{count}")
             item.setData(Qt.UserRole, index)
             item.setToolTip(f"{entry.name}\n{entry.id}\n用量 {count}")
             self.palette_list.addItem(item)
@@ -1238,25 +1475,43 @@ class MainWindow(QMainWindow):
             f"<b>孤立单元</b>：{stats.get('isolated_cells', 0)}</p>",
         ]
         if result.mode == "minecraft":
+            vanilla = stats.get("vanilla_coverage") or {}
+            renderable = stats.get("renderable_coverage") or {}
+            pack = stats.get("pack_coverage") or {}
             lines.append(
                 f"<p><b>版本</b>：{stats.get('edition')} {stats.get('version')}<br>"
                 f"<b>候选方块</b>：{stats.get('candidate_blocks')}<br>"
                 f"<b>方块种类</b>：{stats.get('block_types')}<br>"
                 f"<b>合成来源</b>：{'Mojang 真实贴图' if stats.get('resource_source') == 'mojang-resource' else '内置近似色'}<br>"
                 f"<b>合法率</b>：{stats.get('legal_rate', 0) * 100:.1f}%<br>"
-                f"<b>贴图覆盖</b>：{stats.get('texture_overrides', 0)}"
-                f"（{stats.get('texture_pack') or '无资源包'}）<br>"
+                f"<b>原版资源覆盖率</b>：{vanilla.get('numerator', 0)}/{vanilla.get('denominator', 0)}"
+                f"（{vanilla.get('ratio', 0) * 100:.1f}%）<br>"
+                f"<b>可渲染候选覆盖率</b>：{renderable.get('numerator', 0)}/{renderable.get('denominator', 0)}"
+                f"（{renderable.get('ratio', 0) * 100:.1f}%）<br>"
+                f"<b>附加资源包覆盖率</b>：{pack.get('numerator', 0)}/{pack.get('denominator', 0)}"
+                f"（{pack.get('ratio', 0) * 100:.1f}%）<br>"
+                f"<b>预览</b>：{'真实纹理预览' if self.preview_style == 'texture' else '纯色预览'}<br>"
                 f"<b>ΔE00 均值 / P95</b>：{stats.get('mean_delta_e00', 0):.2f} / {stats.get('p95_delta_e00', 0):.2f}</p>"
             )
         elif result.mode == "beads":
+            trust_counts = stats.get("catalog_trust_counts") or {}
+            material_counts = stats.get("catalog_material_counts") or {}
+            trust_text = " · ".join(f"{trust_label(key)} {value}" for key, value in trust_counts.items()) or "-"
+            material_text = " · ".join(
+                f"{material_label(key)} {value}" for key, value in material_counts.items()
+            ) or "-"
             lines.append(
                 f"<p><b>品牌/系列</b>：{stats.get('brand')} / {stats.get('series')}<br>"
+                f"<b>尺寸</b>：{stats.get('size') or '-'}<br>"
+                f"<b>色卡来源</b>：{stats.get('catalog_source') or '-'}（{stats.get('catalog_license') or '未知许可'}）<br>"
+                f"<b>可信度</b>：{trust_text}<br>"
+                f"<b>材质</b>：{material_text}<br>"
                 f"<b>总珠子</b>：{stats.get('total_beads')}<br>"
                 f"<b>使用颜色</b>：{stats.get('used_colors')}<br>"
                 f"<b>底板</b>：{stats.get('boards')} 块（{stats.get('board_size')}）<br>"
                 f"<b>采购包数</b>：{stats.get('packs_required', 0)} 包"
                 f"（每包 {stats.get('pack_size', 0)}）<br>"
-                f"<b>色卡已验证</b>：{'是' if stats.get('verified_catalog') else '否'}</p>"
+                f"<b>色卡已验证</b>：{'是' if stats.get('verified_catalog') else '否（社区/采样参考）'}</p>"
             )
         if stats.get("note"):
             lines.append(f"<p><i>{stats['note']}</i></p>")
@@ -1304,37 +1559,42 @@ class MainWindow(QMainWindow):
 
     # ---------- 编辑 ---------- #
     def _on_tool_changed(self, action):
+        previous = self.tool
         self.tool = action.data()
+        self.selection_anchor = None
+        if previous == "select" and self.tool != "select":
+            self.clear_selection()
         self.lbl_status.setText(f"工具：{action.text()}")
 
     def _on_stroke_started(self):
         self._stroke_pending = True
+        if self.tool in ("select", "lock"):
+            self.selection_anchor = None
 
     def _on_cell_pressed(self, col, row):
         self._apply_tool(col, row)
 
     def _on_cell_dragged(self, col, row):
-        if self.tool in ("paint", "erase"):
+        if self.tool in ("paint", "erase", "select"):
             self._apply_tool(col, row)
 
     def _ensure_undo(self):
         if not self._stroke_pending:
             return
-        result = self._current_result()
-        if result is None:
+        document = self._current_document()
+        if document is None:
             return
-        stack = self.undo_stack[self.mode]
-        stack.append(result.grid.labels.copy())
-        if len(stack) > 50:
-            stack.pop(0)
-        self.redo_stack[self.mode].clear()
+        document.push_history()
         self._stroke_pending = False
 
     def _apply_tool(self, col, row):
+        document = self._current_document()
         result = self._current_result()
-        if result is None or self._thread is not None:
+        if document is None or result is None or self._thread is not None:
             return
-        labels = result.grid.labels
+        if self.interaction_mode != "edit":
+            return
+        labels = document.labels
         height, width = labels.shape
         if not (0 <= col < width and 0 <= row < height):
             return
@@ -1344,6 +1604,25 @@ class MainWindow(QMainWindow):
             if value >= 0:
                 self.selected_entry = value
                 self.palette_list.setCurrentRow(value)
+            return
+
+        if self.tool == "lock":
+            locked = document.toggle_lock(col, row)
+            self.canvas.set_locked_mask(document.locked)
+            self.lbl_status.setText(f"已{'锁定' if locked else '解锁'} ({col}, {row})")
+            return
+
+        if self.tool == "select":
+            if self.selection_anchor is None:
+                self.selection_anchor = (col, row)
+            document.set_selection(self.selection_anchor, (col, row))
+            self.canvas.set_selection(document.selection)
+            x0, y0, x1, y1 = document.selection
+            self.lbl_status.setText(f"选区 ({x0}, {y0}) - ({x1}, {y1})")
+            return
+
+        if document.is_locked(col, row):
+            self.lbl_status.setText(f"({col}, {row}) 已锁定，无法编辑")
             return
 
         if self.tool == "erase" and result.mode != "pixel":
@@ -1363,6 +1642,8 @@ class MainWindow(QMainWindow):
                 if (current_row, current_col) in visited:
                     continue
                 visited.add((current_row, current_col))
+                if document.locked[current_row, current_col]:
+                    continue
                 if int(labels[current_row, current_col]) != target:
                     continue
                 labels[current_row, current_col] = new_value
@@ -1375,7 +1656,7 @@ class MainWindow(QMainWindow):
             if target < 0 or target == new_value:
                 return
             self._ensure_undo()
-            labels[labels == target] = new_value
+            labels[(labels == target) & ~document.locked] = new_value
         else:
             if int(labels[row, col]) == new_value:
                 return
@@ -1384,17 +1665,19 @@ class MainWindow(QMainWindow):
 
         self._refresh_after_edit()
 
-    def _refresh_after_edit(self):
+    def _refresh_after_edit(self, immediate: bool = False):
         result = self._current_result()
-        if result is None:
+        document = self._current_document()
+        if result is None or document is None:
             return
-        labels = result.grid.labels
-        result.image = render_grid(labels, result.grid.entries, transparent=(result.mode == "pixel"))
+        result.grid.labels = document.labels
+        labels = document.labels
+        result.image = render_grid(labels, document.entries, transparent=(result.mode == "pixel"))
         flat = labels.reshape(-1)
         valid = flat[flat >= 0]
         values, counts = np.unique(valid, return_counts=True) if valid.size else (np.array([]), np.array([]))
         result.stats["counts"] = {
-            result.grid.entries[int(value)].id: int(count) for value, count in zip(values, counts)
+            document.entries[int(value)].id: int(count) for value, count in zip(values, counts)
         }
         result.stats["filled_cells"] = int(valid.size)
         result.stats["empty_cells"] = int(flat.size - valid.size)
@@ -1431,29 +1714,56 @@ class MainWindow(QMainWindow):
             result.stats["packs_required"] = sum(
                 (int(count) + pack_size - 1) // pack_size for count in counts
             )
-        self.canvas.set_image(result.image, (result.grid.spec.width, result.grid.spec.height))
-        self._refresh_palette()
-        self._refresh_stats()
+        self.canvas.set_image(
+            document.render(self.preview_style),
+            (document.spec.width, document.spec.height),
+        )
         self._update_status()
         self._update_action_states()
+        # 拖动绘制时侧栏重建代价高，合并到空闲时统一刷新
+        if immediate:
+            self._side_timer.stop()
+            self._refresh_palette()
+            self._refresh_stats()
+        else:
+            self._side_timer.start()
+
+    def _flush_side_panels(self):
+        """ 笔画结束或空闲后统一刷新调色板与统计，避免逐格重建列表 """
+        self._side_timer.stop()
+        self._refresh_palette()
+        self._refresh_stats()
 
     def undo(self):
-        stack = self.undo_stack[self.mode]
-        result = self._current_result()
-        if not stack or result is None:
+        document = self._current_document()
+        if document is None or not document.undo():
             return
-        self.redo_stack[self.mode].append(result.grid.labels.copy())
-        result.grid.labels = stack.pop()
-        self._refresh_after_edit()
+        self._refresh_after_edit(immediate=True)
 
     def redo(self):
-        stack = self.redo_stack[self.mode]
-        result = self._current_result()
-        if not stack or result is None:
+        document = self._current_document()
+        if document is None or not document.redo():
             return
-        self.undo_stack[self.mode].append(result.grid.labels.copy())
-        result.grid.labels = stack.pop()
-        self._refresh_after_edit()
+        self._refresh_after_edit(immediate=True)
+
+    def toggle_selection_lock(self):
+        document = self._current_document()
+        if document is None:
+            return
+        if document.selection is None:
+            self.lbl_status.setText("请先用“矩形框选”选择区域")
+            return
+        document.lock_selection(True)
+        self.canvas.set_locked_mask(document.locked)
+        x0, y0, x1, y1 = document.selection
+        self.lbl_status.setText(f"已锁定选区 ({x0}, {y0}) - ({x1}, {y1})")
+
+    def clear_selection(self):
+        document = self._current_document()
+        if document is not None:
+            document.clear_selection()
+        self.selection_anchor = None
+        self.canvas.set_selection(None)
 
     # ---------- 主题/视图 ---------- #
     def canvas_fit(self):
@@ -1495,12 +1805,17 @@ class MainWindow(QMainWindow):
 
     def _update_action_states(self):
         result = self._current_result()
+        document = self._current_document() if result is not None else None
         has_result = result is not None
         busy = self._thread is not None
         for action in (self.act_save_project, self.act_export_png, self.act_export_csv, self.act_export_pdf):
             action.setEnabled(has_result and not busy)
-        self.act_undo.setEnabled(bool(self.undo_stack[self.mode]) and not busy)
-        self.act_redo.setEnabled(bool(self.redo_stack[self.mode]) and not busy)
+        self.act_undo.setEnabled(bool(document and document.can_undo) and not busy)
+        self.act_redo.setEnabled(bool(document and document.can_redo) and not busy)
+        editing = self.interaction_mode == "edit" and not busy
+        for action in self.tool_actions.values():
+            action.setEnabled(editing)
+        self._refresh_preview_actions()
 
     # ---------- 其它 ---------- #
     def _restore_window_state(self):
@@ -1536,40 +1851,87 @@ class MainWindow(QMainWindow):
 
     def _refresh_bead_catalog_combos(self):
         brands = sorted({item.brand for item in self.bead_catalog})
+        preferred_brand, preferred_series = preferred_selection(self.bead_catalog)
         current_brand = self.bead_brand.currentData()
         self.bead_brand.blockSignals(True)
         self.bead_brand.clear()
         for brand in brands:
             self.bead_brand.addItem(brand, brand)
-        if current_brand and current_brand in brands:
-            self.bead_brand.setCurrentIndex(self.bead_brand.findData(current_brand))
+        target = current_brand if current_brand in brands else preferred_brand
+        index = self.bead_brand.findData(target)
+        if index >= 0:
+            self.bead_brand.setCurrentIndex(index)
         self.bead_brand.blockSignals(False)
         self._on_bead_brand_changed()
-        series = sorted(
-            {item.series for item in self.bead_catalog if item.brand == self.bead_brand.currentData()}
-        )
+        if target == preferred_brand and preferred_series:
+            self._set_combo_data(self.bead_series, preferred_series)
+            self._on_bead_series_changed()
+
+        meta = self.bead_palette_meta or {}
+        verifies = sum(1 for item in self.bead_catalog if item.verified)
+        imported = any(item.source.startswith("user") for item in self.bead_catalog)
+        if meta and not imported:
+            trust = meta.get("trust_counts") or {}
+            source_names = "、".join(
+                f"{source.get('name')} ({source.get('license')})" for source in meta.get("sources", [])
+            )
+            self.bead_catalog_note.setText(
+                f"SQLite 色卡库：{len(self.bead_catalog)} 色 / {len(meta.get('palettes') or [])} 个系列；"
+                f"官方 {trust.get('official', 0)} · 社区 {trust.get('community', 0)} · "
+                f"采样 {trust.get('sampled', 0)} · 未知 {trust.get('unknown', 0)}；冲突 "
+                f"{meta.get('conflicts', 0)} 条（保留双份）"
+            )
+            self.bead_source_note.setText(f"数据源：{source_names}；更新：{meta.get('updated_at') or '-'}")
+        else:
+            source_label = "用户导入" if imported else "内置近似"
+            self.bead_catalog_note.setText(
+                f"{source_label}色卡：{len(self.bead_catalog)} 色（{'已验证标记' if verifies == len(self.bead_catalog) else '未验证'}）"
+            )
+            self.bead_source_note.setText("来源：本地导入/内置，不代表品牌官方测量色值")
+
+    def _on_bead_brand_changed(self, _index=None):
+        brand = self.bead_brand.currentData()
+        current = self.bead_series.currentData()
+        series = sorted({item.series for item in self.bead_catalog if item.brand == brand})
+        self.bead_series.blockSignals(True)
         self.bead_series.clear()
         for item in series:
             self.bead_series.addItem(item, item)
-        verified = all(item.verified for item in self.bead_catalog)
-        imported = any(item.source.startswith("user") for item in self.bead_catalog)
-        source_label = "用户导入" if imported else "内置近似"
-        self.bead_catalog_note.setText(
-            f"{source_label}色卡：{len(self.bead_catalog)} 色（{'已验证标记' if verified else '未验证'}）"
+        if current in series:
+            self.bead_series.setCurrentIndex(self.bead_series.findData(current))
+        self.bead_series.blockSignals(False)
+        self._update_bead_filter_combos()
+
+    def _on_bead_series_changed(self, _index=None):
+        self._update_bead_filter_combos()
+
+    def _update_bead_filter_combos(self):
+        brand = self.bead_brand.currentData() or ""
+        series = self.bead_series.currentData() or ""
+        self._fill_bead_filter(
+            self.bead_size, available_sizes(self.bead_catalog, brand, series), "全部尺寸"
+        )
+        self._fill_bead_filter(
+            self.bead_family, available_families(self.bead_catalog, brand, series), "全部色系"
+        )
+        self._fill_bead_filter(
+            self.bead_material, available_materials(self.bead_catalog, brand, series), "全部材质"
         )
 
-    def _on_bead_brand_changed(self):
-        brand = self.bead_brand.currentData()
-        current = self.bead_series.currentData()
-        self.bead_series.blockSignals(True)
-        self.bead_series.clear()
-        for series in sorted({item.series for item in self.bead_catalog if item.brand == brand}):
-            self.bead_series.addItem(series, series)
-        if current:
-            index = self.bead_series.findData(current)
-            if index >= 0:
-                self.bead_series.setCurrentIndex(index)
-        self.bead_series.blockSignals(False)
+    def _fill_bead_filter(self, combo: QComboBox, values: list[str], all_label: str):
+        current = combo.currentData() or ""
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(all_label, "")
+        for value in values:
+            if value == "solid":
+                combo.addItem(material_label(value), value)
+            else:
+                combo.addItem(value, value)
+        index = combo.findData(current)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
 
     def _result_from_grid(self, grid, settings: dict) -> RenderResult:
         image = render_grid(grid.labels, grid.entries, transparent=(grid.mode == "pixel"))

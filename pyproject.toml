@@ -29,10 +29,11 @@ dev = [
 [project.scripts]
 moge = "Moge.main:main"
 moge-resources = "Moge.core.resources.cli:main"
+moge-beads = "Moge.core.beads.acquire:main"
 
 [tool.setuptools]
-packages = ["Moge", "Moge.core", "Moge.core.modes", "Moge.core.resources", "Moge.exporters", "Moge.ui", "Moge.utils"]
-package-dir = { "Moge" = ".", "Moge.core" = "core", "Moge.core.modes" = "core/modes", "Moge.core.resources" = "core/resources", "Moge.exporters" = "exporters", "Moge.ui" = "ui", "Moge.utils" = "utils" }
+packages = ["Moge", "Moge.core", "Moge.core.modes", "Moge.core.resources", "Moge.core.beads", "Moge.exporters", "Moge.ui", "Moge.utils"]
+package-dir = { "Moge" = ".", "Moge.core" = "core", "Moge.core.modes" = "core/modes", "Moge.core.resources" = "core/resources", "Moge.core.beads" = "core/beads", "Moge.exporters" = "exporters", "Moge.ui" = "ui", "Moge.utils" = "utils" }
 
 [tool.ruff]
 line-length = 120

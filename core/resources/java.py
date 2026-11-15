@@ -10,6 +10,8 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
+import numpy as np
+
 from Moge.core.resources.catalog import choose_face, metadata_for
 from Moge.core.resources.features import analyze_texture_bytes
 from Moge.core.resources.network import cached_json, download_file
@@ -136,7 +138,7 @@ def _resolve_model(name: str, models: dict[str, dict], seen=None) -> dict:
     name = str(name).replace("minecraft:", "")
     seen = seen or set()
     if name in seen:
-        return {"textures": {}, "elements": []}
+        return {"textures": {}, "elements": [], "parents": []}
     seen.add(name)
     model = (
         models.get(name)
@@ -145,19 +147,21 @@ def _resolve_model(name: str, models: dict[str, dict], seen=None) -> dict:
         or models.get(name.replace("block/", "blocks/"))
     )
     if not model:
-        return {"textures": {}, "elements": []}
+        return {"textures": {}, "elements": [], "parents": []}
 
     textures: dict[str, str] = {}
     elements: list[dict] = []
+    parents: list[str] = [name]
     parent = model.get("parent")
     if isinstance(parent, str):
         parent_data = _resolve_model(parent, models, seen)
         textures.update(parent_data["textures"])
         elements = parent_data["elements"]
+        parents.extend(parent_data["parents"])
     textures.update(model.get("textures") or {})
     if isinstance(model.get("elements"), list):
         elements = model["elements"]
-    return {"textures": textures, "elements": elements}
+    return {"textures": textures, "elements": elements, "parents": parents}
 
 
 def _resolve_texture_map(textures: dict[str, str]) -> dict[str, str]:
@@ -229,6 +233,76 @@ def _find_texture_info(ref: str, texture_infos: dict[str, zipfile.ZipInfo]):
     return None, normalized
 
 
+CUBE_TEXTURE_KEYS = (
+    frozenset({"all"}),
+    frozenset({"top", "side"}),
+    frozenset({"end", "side"}),
+    frozenset({"down", "up"}),
+    frozenset({"north", "south", "east", "west"}),
+)
+
+
+def _elements_cover_cube(elements: list[dict]) -> bool:
+    """ 由模型元素的实际包围盒判断是否填满 16³ 立方体 """
+    covered = np.zeros((16, 16, 16), dtype=bool)
+    for element in elements:
+        rotation = element.get("rotation")
+        if isinstance(rotation, dict) and float(rotation.get("angle", 0) or 0) % 360:
+            return False
+        start = element.get("from") or [0, 0, 0]
+        end = element.get("to") or [16, 16, 16]
+        try:
+            axis_ranges = [sorted((float(start[i]), float(end[i]))) for i in range(3)]
+        except (TypeError, ValueError, IndexError):
+            return False
+        ranges = []
+        for low, high in axis_ranges:
+            low_i = max(0, min(16, int(round(low))))
+            high_i = max(0, min(16, int(round(high))))
+            if high_i <= low_i:
+                return False
+            ranges.append((low_i, high_i))
+        (x0, x1), (y0, y1), (z0, z1) = ranges
+        covered[x0:x1, y0:y1, z0:z1] = True
+    return bool(covered.all())
+
+
+def _is_full_cube_model(resolved: dict) -> bool:
+    """ 无 elements 的模型按贴图槽位判断是否为原版完整立方体模板 """
+    elements = resolved.get("elements") or []
+    if elements:
+        return _elements_cover_cube(elements)
+    textures = resolved.get("textures") or {}
+    keys = {key for key, value in textures.items() if isinstance(value, str)}
+    if any(required.issubset(keys) for required in CUBE_TEXTURE_KEYS):
+        return True
+    for parent in resolved.get("parents") or []:
+        name = str(parent)
+        if name == "block/cube" or name.startswith("block/cube_") or name.startswith("block/cube"):
+            return True
+    return False
+
+
+def _state_label(state: dict, chosen_model: str) -> str:
+    """ 记录实际取面的 blockstate 变体键，便于追溯方块状态 """
+    variants = state.get("variants") or {}
+    if isinstance(variants, dict):
+        for key, value in variants.items():
+            models = []
+            if isinstance(value, dict) and isinstance(value.get("model"), str):
+                models.append(value["model"])
+            elif isinstance(value, list):
+                models = [
+                    item["model"] for item in value
+                    if isinstance(item, dict) and isinstance(item.get("model"), str)
+                ]
+            if chosen_model in models:
+                return str(key)
+    if state.get("multipart"):
+        return "multipart"
+    return ""
+
+
 def parse_client_jar(
     jar_path: Path,
     version_id: int,
@@ -273,27 +347,35 @@ def parse_client_jar(
             model_names = _collect_models(state)
             face_refs: dict[str, str] = {}
             tinted = False
+            chosen_model = ""
+            resolved_models: list[dict] = []
             for model_name in model_names:
                 raw = _resolve_model(model_name, models)
+                resolved_models.append(raw)
                 resolved_textures = _resolve_texture_map(raw["textures"])
                 resolved = {
                     "textures": resolved_textures,
                     "elements": _resolve_elements(raw["elements"], resolved_textures),
                 }
-                for face_name, ref in _face_refs(resolved).items():
-                    face_refs.setdefault(face_name, ref)
+                if not face_refs:
+                    refs = _face_refs(resolved)
+                    if refs:
+                        face_refs = refs
+                        chosen_model = model_name
                 for element in resolved.get("elements") or []:
                     for face in (element.get("faces") or {}).values():
                         if int(face.get("tintindex", -1)) >= 0:
                             tinted = True
-                if face_refs:
-                    break
+            full_cube = bool(model_names) and all(_is_full_cube_model(item) for item in resolved_models)
+            geometry = "full_cube" if full_cube else ("partial" if face_refs else "unknown")
 
             faces = {}
+            block_missing = 0
             for face_name, ref in face_refs.items():
                 info, normalized = _find_texture_info(ref, texture_infos)
                 if info is None:
                     missing_textures.add(normalized)
+                    block_missing += 1
                     continue
                 key = info.filename
                 if key not in texture_cache:
@@ -316,6 +398,7 @@ def parse_client_jar(
             if chosen:
                 faces.setdefault("all", chosen)
             complete = bool(faces)
+            verified = complete and block_missing == 0
             block_records.append(
                 {
                     "block_id": block_id,
@@ -330,6 +413,9 @@ def parse_client_jar(
                     "visible_face": metadata["visible_face"],
                     "complete": complete,
                     "tinted": tinted,
+                    "geometry": geometry,
+                    "block_state": _state_label(state, chosen_model),
+                    "verified": verified,
                     "notes": metadata["notes"] + ("" if complete else "；缺少可用贴图引用"),
                     "faces": faces,
                 }
@@ -343,6 +429,8 @@ def parse_client_jar(
         "total_blocks": len(block_records),
         "complete_blocks": complete,
         "incomplete_blocks": len(block_records) - complete,
+        "full_cube_blocks": sum(1 for block in block_records if block["geometry"] == "full_cube"),
+        "verified_blocks": sum(1 for block in block_records if block["verified"]),
         "textures": len({face["sha256"] for block in block_records for face in block["faces"].values()}),
         "missing_textures": len(missing_textures),
         "tinted_blocks": sum(1 for block in block_records if block["tinted"]),

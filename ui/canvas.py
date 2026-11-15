@@ -6,18 +6,20 @@ from typing import Optional
 
 import numpy as np
 from PyQt5.QtCore import QPoint, QRectF, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QPainter, QPen
+from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QWidget
 
 
 class GridCanvas(QWidget):
-    """ 中央画布：最近邻渲染、网格叠层、缩放平移、单元格编辑信号 """
+    """ 中央画布：查看/编辑双模式，最近邻渲染、网格叠层、缩放平移、单元格编辑信号 """
 
     zoomChanged = pyqtSignal(float)
     hoverCellChanged = pyqtSignal(int, int)
     strokeStarted = pyqtSignal()
+    strokeFinished = pyqtSignal()
     cellPressed = pyqtSignal(int, int)
     cellDragged = pyqtSignal(int, int)
+    cellInspected = pyqtSignal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,15 +32,32 @@ class GridCanvas(QWidget):
         self._pan = QPoint(0, 0)
         self._show_grid = True
         self._editable = False
+        self._interaction_mode = "view"
         self._panning = False
         self._painting = False
         self._space_down = False
         self._last_mouse = None
         self._last_hover: tuple[int, int] = (-1, -1)
+        self._press_position = None
+        self._press_cell: Optional[tuple[int, int]] = None
+        self._locked = None
+        self._selection = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(360, 260)
+        self._checker = self._make_checker()
+
+    @staticmethod
+    def _make_checker() -> QPixmap:
+        """ 预生成透明棋盘格，避免每次重绘逐格绘制 """
+        pixmap = QPixmap(16, 16)
+        painter = QPainter(pixmap)
+        painter.fillRect(0, 0, 16, 16, QColor("#cfcfcf"))
+        painter.fillRect(0, 0, 8, 8, QColor("#f2f2f2"))
+        painter.fillRect(8, 8, 8, 8, QColor("#f2f2f2"))
+        painter.end()
+        return pixmap
 
     # ---------- 数据 ---------- #
     def set_image(self, image: Optional[np.ndarray], grid: Optional[tuple[int, int]] = None):
@@ -93,11 +112,33 @@ class GridCanvas(QWidget):
         self._editable = editable
 
     def set_grid_visible(self, visible: bool):
-        self._show_grid = visible
+        self._show_grid = bool(visible)
         self.update()
 
     def grid_visible(self) -> bool:
         return self._show_grid
+
+    # ---------- 查看/编辑 ---------- #
+    def set_interaction_mode(self, mode: str):
+        """ view：仅查看与平移；edit：允许修改网格数据 """
+        self._interaction_mode = "edit" if mode == "edit" else "view"
+        self._painting = False
+        self._panning = False
+        self._press_position = None
+        self._press_cell = None
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def interaction_mode(self) -> str:
+        return self._interaction_mode
+
+    def set_locked_mask(self, mask):
+        self._locked = None if mask is None else np.asarray(mask, dtype=bool)
+        self.update()
+
+    def set_selection(self, selection):
+        self._selection = tuple(selection) if selection else None
+        self.update()
 
     # ---------- 视图 ---------- #
     def fit_to_view(self):
@@ -208,21 +249,50 @@ class GridCanvas(QWidget):
                     y = rect.top() + row * scale
                     painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
 
+        self._draw_locked(painter, rect)
+        self._draw_selection(painter, rect)
+
         painter.setPen(QPen(QColor("#4a5163"), 1))
         painter.drawRect(rect)
 
-    def _draw_checkerboard(self, painter: QPainter, rect: QRectF):
-        size = 8
+    def _draw_locked(self, painter: QPainter, rect: QRectF):
+        if self._locked is None or not self._locked.any() or self._grid[0] <= 0:
+            return
+        scale = rect.width() / self._grid[0]
+        rows, cols = np.nonzero(self._locked)
         painter.save()
         painter.setClipRect(rect)
-        left = int(rect.left())
-        top = int(rect.top())
-        right = int(rect.right())
-        bottom = int(rect.bottom())
-        for y in range(top, bottom, size):
-            for x in range(left, right, size):
-                color = "#cfcfcf" if ((x - left) // size + (y - top) // size) % 2 == 0 else "#f2f2f2"
-                painter.fillRect(x, y, size, size, QColor(color))
+        painter.setPen(QPen(QColor(255, 128, 96, 190), 1))
+        for row, col in zip(rows.tolist(), cols.tolist()):
+            x0 = rect.left() + col * scale
+            y0 = rect.top() + row * scale
+            painter.fillRect(QRectF(x0, y0, scale, scale), QColor(255, 128, 96, 40))
+            painter.drawLine(int(x0), int(y0), int(x0 + scale), int(y0 + scale))
+        painter.restore()
+
+    def _draw_selection(self, painter: QPainter, rect: QRectF):
+        if not self._selection or self._grid[0] <= 0:
+            return
+        col0, row0, col1, row1 = self._selection
+        scale = rect.width() / self._grid[0]
+        selection = QRectF(
+            rect.left() + col0 * scale,
+            rect.top() + row0 * scale,
+            (col1 - col0 + 1) * scale,
+            (row1 - row0 + 1) * scale,
+        )
+        pen = QPen(QColor("#4fc3f7"), 2)
+        pen.setStyle(Qt.DashLine)
+        painter.save()
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(selection)
+        painter.restore()
+
+    def _draw_checkerboard(self, painter: QPainter, rect: QRectF):
+        painter.save()
+        painter.setClipRect(rect)
+        painter.drawTiledPixmap(rect.toRect(), self._checker)
         painter.restore()
 
     # ---------- 交互 ---------- #
@@ -257,10 +327,19 @@ class GridCanvas(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
             return
         cell = self.cell_at(event.pos())
-        if event.button() == Qt.LeftButton and cell is not None and self._editable:
-            self._painting = True
-            self.strokeStarted.emit()
-            self.cellPressed.emit(cell[0], cell[1])
+        if event.button() == Qt.LeftButton and cell is not None:
+            if self._interaction_mode == "view":
+                # 查看模式：左键拖动平移，单击检查
+                self._panning = True
+                self._last_mouse = event.pos()
+                self._press_position = event.pos()
+                self._press_cell = cell
+                self.setCursor(Qt.ClosedHandCursor)
+                return
+            if self._editable:
+                self._painting = True
+                self.strokeStarted.emit()
+                self.cellPressed.emit(cell[0], cell[1])
 
     def mouseMoveEvent(self, event):
         if self._panning and self._last_mouse is not None:
@@ -279,10 +358,22 @@ class GridCanvas(QWidget):
             self.cellDragged.emit(cell[0], cell[1])
 
     def mouseReleaseEvent(self, event):
+        was_painting = self._painting
         if self._panning:
             self._panning = False
             self.setCursor(Qt.ArrowCursor)
+            if (
+                self._interaction_mode == "view"
+                and self._press_position is not None
+                and self._press_cell is not None
+                and (event.pos() - self._press_position).manhattanLength() <= 4
+            ):
+                self.cellInspected.emit(self._press_cell[0], self._press_cell[1])
+        self._press_position = None
+        self._press_cell = None
         self._painting = False
+        if was_painting:
+            self.strokeFinished.emit()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Space:

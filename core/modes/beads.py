@@ -23,8 +23,11 @@ MODE_KEY = "beads"
 MODE_LABEL = "拼豆图纸"
 
 BEAD_DEFAULTS: dict[str, object] = {
-    "brand": "Generic",
-    "series": "Approx",
+    "brand": "",
+    "series": "",
+    "size_filter": "",
+    "family_filter": "",
+    "material_filter": "",
     "catalog": None,
     "inventory_ids": None,
     "disabled_ids": [],
@@ -33,14 +36,20 @@ BEAD_DEFAULTS: dict[str, object] = {
     "pack_size": 1000,
 }
 
-DISPLAY_NOTE = "内置色卡为屏幕近似且未验证，不代表任何品牌的官方色值；请导入并核对官方色卡。"
+DISPLAY_NOTE = (
+    "色卡来自公开数据源（HansBug/pindou-color-data、maxcleme/beadcolors，MIT）；"
+    "RGB 为屏幕参考值，不等同品牌官方测量色，透明/夜光/荧光等材质已单独标记。"
+)
 
 
 def _catalog(params: dict[str, object]) -> list[BeadColor]:
     catalog = params.get("catalog")
     if catalog:
         return list(catalog)
-    return list(BEAD_CATALOG)
+    from Moge.core.beads.catalog import load_catalog
+
+    loaded = load_catalog()
+    return loaded or list(BEAD_CATALOG)
 
 
 def build_config(spec: GridSpec, settings: dict[str, object]) -> PipelineConfig:
@@ -60,16 +69,21 @@ def build_config(spec: GridSpec, settings: dict[str, object]) -> PipelineConfig:
 
 
 def catalog_options(catalog: Optional[Sequence[BeadColor]] = None):
-    items = list(catalog) if catalog else list(BEAD_CATALOG)
+    items = list(catalog) if catalog else _catalog({})
     brands = catalog_brands(items)
     series = catalog_series(items, brands[0]) if brands else []
     return brands, series
 
 
 def selectable_beads(settings: dict[str, object]) -> list[BeadColor]:
+    from Moge.core.beads.catalog import preferred_selection
+
     catalog = _catalog(dict(settings))
-    brand = str(settings.get("brand") or (catalog[0].brand if catalog else ""))
-    series = str(settings.get("series") or (catalog[0].series if catalog else ""))
+    preferred_brand, preferred_series = preferred_selection(catalog)
+    brand = str(settings.get("brand") or preferred_brand or (catalog[0].brand if catalog else ""))
+    available = [item for item in catalog if item.brand == brand]
+    default_series = preferred_series if brand == preferred_brand else (available[0].series if available else "")
+    series = str(settings.get("series") or default_series)
     inventory = settings.get("inventory_ids")
     disabled = settings.get("disabled_ids") or []
     return filter_beads(
@@ -78,6 +92,9 @@ def selectable_beads(settings: dict[str, object]) -> list[BeadColor]:
         series=series,
         inventory_ids=inventory if inventory else None,
         disabled_ids=disabled,
+        size=str(settings.get("size_filter") or "") or None,
+        color_family=str(settings.get("family_filter") or "") or None,
+        material=str(settings.get("material_filter") or "") or None,
     )
 
 
@@ -91,6 +108,9 @@ def stage_map_beads(context: PipelineContext):
     candidates = selectable_beads(settings)
     if not candidates:
         raise ValueError("当前品牌/系列/库存/禁用条件下没有可用颜色")
+    # 记录实际使用的品牌/系列，便于工程保存与恢复
+    settings["brand"] = candidates[0].brand
+    settings["series"] = candidates[0].series
 
     context.report(0.2, "正在匹配拼豆色号")
     palette_rgb = np.array([item.rgb for item in candidates], dtype=np.uint8)
@@ -113,6 +133,12 @@ def stage_map_beads(context: PipelineContext):
                 "availability": item.availability,
                 "verified": item.verified,
                 "revision": item.revision,
+                "size": item.size,
+                "color_family": item.color_family,
+                "material": item.material,
+                "trust": item.trust,
+                "source_url": item.source_url,
+                "license": item.license,
             },
         )
         for item in candidates
@@ -126,7 +152,15 @@ def stage_map_beads(context: PipelineContext):
             category=item.series,
             source=item.source,
             verified=item.verified,
-            meta={"brand": item.brand, "series": item.series, "code": item.code},
+            meta={
+                "brand": item.brand,
+                "series": item.series,
+                "code": item.code,
+                "size": item.size,
+                "material": item.material,
+                "trust": item.trust,
+                "license": item.license,
+            },
         )
         for item in candidates
     ]
@@ -160,10 +194,22 @@ def stage_map_beads(context: PipelineContext):
     pack_size = max(1, int(settings.get("pack_size", 1000)))
     packs_required = int(sum(int(np.ceil(count / pack_size)) for count in counts))
 
+    trust_counts: dict[str, int] = {}
+    material_counts: dict[str, int] = {}
+    for item in candidates:
+        trust_counts[item.trust] = trust_counts.get(item.trust, 0) + 1
+        material_counts[item.material] = material_counts.get(item.material, 0) + 1
+    licenses = sorted({item.license for item in candidates if item.license})
+
     context.stats.update(
         {
-            "brand": settings.get("brand"),
-            "series": settings.get("series"),
+            "brand": candidates[0].brand if candidates else settings.get("brand"),
+            "series": candidates[0].series if candidates else settings.get("series"),
+            "size": candidates[0].size if candidates else "",
+            "catalog_source": candidates[0].source if candidates else "",
+            "catalog_license": " / ".join(licenses),
+            "catalog_trust_counts": trust_counts,
+            "catalog_material_counts": material_counts,
             "candidate_colors": len(candidates),
             "used_colors": len(used_ids),
             "total_beads": int(np.count_nonzero(context.labels >= 0)),
@@ -174,6 +220,7 @@ def stage_map_beads(context: PipelineContext):
             "mean_delta_e00": float(np.mean(deltas)),
             "p95_delta_e00": float(np.percentile(deltas, 95)),
             "verified_catalog": all(item.verified for item in candidates),
+            "official_catalog": all(item.trust == "official" for item in candidates),
             "pack_size": pack_size,
             "packs_required": packs_required,
             "note": DISPLAY_NOTE,

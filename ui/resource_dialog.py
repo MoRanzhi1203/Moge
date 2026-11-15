@@ -241,7 +241,7 @@ class ResourceManagerDialog(QDialog):
         self.table.setRowCount(len(rows))
         for index, row in enumerate(rows):
             values = [
-                row["version"], row.get("version_type", ""), row["status"],
+                row["version"], row.get("version_type", ""), row.get("state") or row["status"],
                 str(row.get("blocks", 0)), row.get("tag", "") or row["edition"],
             ]
             for col, value in enumerate(values):

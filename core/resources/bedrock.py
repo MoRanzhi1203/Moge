@@ -360,10 +360,12 @@ def parse_bedrock_zip(
                     face_refs = {"side": ref, "top": ref, "bottom": ref, "front": ref}
 
             faces = {}
+            block_missing = 0
             for face_name, ref in face_refs.items():
                 info = _find_texture(ref, texture_infos)
                 if info is None:
                     missing.add(ref)
+                    block_missing += 1
                     continue
                 key = info.filename
                 if key not in texture_cache:
@@ -397,6 +399,10 @@ def parse_bedrock_zip(
                     "visible_face": metadata["visible_face"],
                     "complete": complete,
                     "tinted": False,
+                    # 官方 resource samples 不含模型几何，无法据此判定完整立方体
+                    "geometry": "unknown",
+                    "block_state": "",
+                    "verified": complete and block_missing == 0,
                     "notes": metadata["notes"] + ("" if complete else "；缺少可用 Bedrock 纹理"),
                     "faces": faces,
                 }
@@ -408,6 +414,8 @@ def parse_bedrock_zip(
         "total_blocks": len(block_records),
         "complete_blocks": complete,
         "incomplete_blocks": len(block_records) - complete,
+        "full_cube_blocks": 0,
+        "verified_blocks": sum(1 for block in block_records if block["verified"]),
         "textures": len({face["sha256"] for block in block_records for face in block["faces"].values()}),
         "missing_textures": len(missing),
         "tinted_blocks": 0,

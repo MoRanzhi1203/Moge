@@ -169,3 +169,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# 本地 Minecraft 官方资源与下载工具输出（禁止提交到公共仓库）
+Moge_Texture_Fetcher/
+Moge_Texture_Fetcher.zip
+docs/evidence/

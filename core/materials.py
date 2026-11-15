@@ -65,6 +65,12 @@ class MinecraftBlock:
     visible_face: str = "all"  # all / top / side / front
     source: str = "builtin-approx"
     note: str = ""
+    # 真实资源附加信息：几何分类与贴图溯源
+    geometry: str = "unknown"  # full_cube / partial / unknown
+    block_state: str = ""
+    texture_sha256: str = ""
+    texture_path: str = ""
+    verified: bool = False
 
     def available_in(self, version: str, edition: str = "java") -> bool:
         if edition not in self.editions:
@@ -172,8 +178,13 @@ def filter_blocks(
     exclude_transparent: bool = False,
     exclude_gravity: bool = False,
     blocks: Optional[Iterable[MinecraftBlock]] = None,
+    require_full_cube: Optional[bool] = None,
 ) -> list[MinecraftBlock]:
-    """ 按版本、类别、获取条件、朝向与建造限制筛选合法候选方块 """
+    """ 按版本、类别、获取条件、朝向与建造限制筛选合法候选方块
+
+    require_full_cube=True 时只保留几何确认为完整立方体的方块；
+    为 None 时排除已判定为非完整几何（partial）的方块，未知几何保留。
+    """
     category_set: Optional[set[str]] = set(categories) if categories else None
     include_set = set(included_ids) if included_ids else None
     exclude_set = set(excluded_ids) if excluded_ids else set()
@@ -181,6 +192,10 @@ def filter_blocks(
     result: list[MinecraftBlock] = []
     for block in (blocks if blocks is not None else MC_BLOCKS):
         if not block.available_in(version, edition):
+            continue
+        if require_full_cube is True and block.geometry != "full_cube":
+            continue
+        if require_full_cube is None and block.geometry == "partial":
             continue
         if category_set is not None and block.category not in category_set:
             continue
@@ -258,6 +273,13 @@ class BeadColor:
     revision: str = "2026.1"
     product_line: str = "demo"
     verified: bool = False
+    size: str = ""
+    color_family: str = ""
+    material: str = "solid"
+    trust: str = "unknown"  # official / community / sampled / unknown
+    source_url: str = ""
+    license: str = ""
+    palette_id: str = ""
 
     @property
     def id(self) -> str:
@@ -408,12 +430,21 @@ def filter_beads(
     series: str,
     inventory_ids: Optional[Iterable[str]] = None,
     disabled_ids: Optional[Iterable[str]] = None,
+    size: Optional[str] = None,
+    color_family: Optional[str] = None,
+    material: Optional[str] = None,
 ) -> list[BeadColor]:
     inventory = set(inventory_ids) if inventory_ids is not None else None
     disabled = set(disabled_ids) if disabled_ids else set()
     result: list[BeadColor] = []
     for item in catalog:
         if item.brand != brand or item.series != series:
+            continue
+        if size and item.size != size:
+            continue
+        if color_family and item.color_family != color_family:
+            continue
+        if material and item.material != material:
             continue
         if item.id in disabled or item.code in disabled:
             continue

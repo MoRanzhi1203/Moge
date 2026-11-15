@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS blocks (
     visible_face TEXT DEFAULT 'side',
     complete INTEGER DEFAULT 0,
     tinted INTEGER DEFAULT 0,
+    geometry TEXT DEFAULT 'unknown',
+    block_state TEXT DEFAULT '',
+    verified INTEGER DEFAULT 0,
     notes TEXT DEFAULT '',
     UNIQUE(version_id, block_id),
     FOREIGN KEY(version_id) REFERENCES versions(id) ON DELETE CASCADE
@@ -90,7 +93,22 @@ class ResourceDatabase:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         self.connection.executescript(SCHEMA)
+        self._migrate()
         self.connection.commit()
+
+    def _migrate(self):
+        """ 兼容旧索引库：补齐新增列，避免用户升级后需重新下载资源 """
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(blocks)").fetchall()
+        }
+        for name, definition in (
+            ("geometry", "TEXT DEFAULT 'unknown'"),
+            ("block_state", "TEXT DEFAULT ''"),
+            ("verified", "INTEGER DEFAULT 0"),
+        ):
+            if name not in columns:
+                self.connection.execute(f"ALTER TABLE blocks ADD COLUMN {name} {definition}")
 
     def close(self):
         self.connection.close()
@@ -224,8 +242,8 @@ class ResourceDatabase:
                 """
                 INSERT INTO blocks(version_id, block_id, name, category, obtainability, renewable,
                                    buildable, gravity, transparent, orientation, visible_face,
-                                   complete, tinted, notes)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                   complete, tinted, geometry, block_state, verified, notes)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     version_id, block["block_id"], block.get("name", ""),
@@ -234,6 +252,8 @@ class ResourceDatabase:
                     int(bool(block.get("gravity", False))), int(bool(block.get("transparent", False))),
                     block.get("orientation", "none"), block.get("visible_face", "side"),
                     int(bool(block.get("complete", False))), int(bool(block.get("tinted", False))),
+                    block.get("geometry", "unknown"), block.get("block_state", ""),
+                    int(bool(block.get("verified", False))),
                     block.get("notes", ""),
                 ),
             )
@@ -262,15 +282,21 @@ class ResourceDatabase:
         return int(row["n"])
 
     def get_blocks(self, edition: str, version: str) -> list[dict]:
+        """ 返回方块及其面数据；面记录附带贴图路径/哈希，方块记录附带来源哈希与校验位 """
         version_row = self.get_version(edition, version)
         if not version_row:
             return []
         rows = self.connection.execute(
             "SELECT * FROM blocks WHERE version_id=? ORDER BY block_id", (version_row["id"],)
         ).fetchall()
+        texture_rows = self.connection.execute("SELECT sha256, path FROM textures").fetchall()
+        texture_paths = {row["sha256"]: row["path"] for row in texture_rows}
         result = []
         for row in rows:
             item = dict(row)
+            item["edition"] = edition
+            item["version"] = version
+            item["source_hash"] = version_row.get("resource_sha256", "")
             faces = self.connection.execute(
                 "SELECT * FROM block_faces WHERE block_row_id=?", (row["id"],)
             ).fetchall()
@@ -279,11 +305,41 @@ class ResourceDatabase:
                     "sha256": face["texture_sha256"],
                     "rgb": (face["rgb_r"], face["rgb_g"], face["rgb_b"]),
                     "lab": (face["lab_l"], face["lab_a"], face["lab_b"]),
+                    "path": texture_paths.get(face["texture_sha256"], ""),
                 }
                 for face in faces
             }
             result.append(item)
         return result
+
+    def block_coverage(self, edition: str, version: str) -> dict:
+        """ 原版资源覆盖率：分子/分母均为明确计数，不采用推断值 """
+        rows = self.get_blocks(edition, version)
+        total = len(rows)
+        textured = sum(
+            1 for row in rows if any(face["sha256"] and face["path"] for face in row["faces"].values())
+        )
+        full_cube = sum(1 for row in rows if row.get("geometry") == "full_cube")
+        renderable = sum(
+            1
+            for row in rows
+            if row.get("complete")
+            and any(face["sha256"] and face["path"] for face in row["faces"].values())
+        )
+        verified = sum(1 for row in rows if row.get("verified"))
+        return {
+            "edition": edition,
+            "version": version,
+            "total_blocks": total,
+            "textured_blocks": textured,
+            "full_cube_blocks": full_cube,
+            "renderable_blocks": renderable,
+            "verified_blocks": verified,
+            "vanilla_numerator": textured,
+            "vanilla_denominator": total,
+            "full_cube_ratio": (full_cube / total) if total else 0.0,
+            "renderable_ratio": (renderable / total) if total else 0.0,
+        }
 
     def block_diff(self, edition: str, version_a: str, version_b: str) -> dict:
         a = {row["block_id"] for row in self.get_blocks(edition, version_a)}

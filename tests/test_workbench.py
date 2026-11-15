@@ -43,6 +43,8 @@ def test_workbench_three_modes_edit_and_switch(qapp, monkeypatch):
     result = window.results["pixel"]
     original = result.grid.labels.copy()
 
+    window.act_edit_mode.trigger()
+    assert window.interaction_mode == "edit"
     window.tool = "paint"
     window.selected_entry = min(1, len(result.grid.entries) - 1)
     window._on_stroke_started()
