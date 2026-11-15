@@ -35,6 +35,10 @@ def _json_safe(value):
 
 
 def _manifest(result: RenderResult, source_path: str = None) -> dict:
+    settings = _json_safe(result.settings)
+    # 色卡从 SQLite 数据库恢复，工程文件只保留筛选条件，避免重复存储整份色卡
+    if isinstance(settings, dict) and isinstance(settings.get("params"), dict):
+        settings["params"].pop("catalog", None)
     return {
         "schema": SCHEMA_VERSION,
         "app": "Moge",
@@ -42,7 +46,7 @@ def _manifest(result: RenderResult, source_path: str = None) -> dict:
         "mode": result.mode,
         "created_at": result.created_at,
         "source_path": source_path or "",
-        "settings": _json_safe(result.settings),
+        "settings": settings,
         "grid": {
             "width": int(result.grid.spec.width),
             "height": int(result.grid.spec.height),

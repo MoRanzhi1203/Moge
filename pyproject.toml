@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "moge"
 version = "2.0.0"
 description = "墨格 - 图像像素化处理器"
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 authors = [{ name = "MoRanzhi1203" }]
@@ -27,10 +28,12 @@ dev = [
 
 [project.scripts]
 moge = "Moge.main:main"
+moge-resources = "Moge.core.resources.cli:main"
+moge-beads = "Moge.core.beads.acquire:main"
 
 [tool.setuptools]
-packages = ["Moge", "Moge.core", "Moge.core.modes", "Moge.exporters", "Moge.ui", "Moge.utils"]
-package-dir = { "Moge" = ".", "Moge.core" = "core", "Moge.core.modes" = "core/modes", "Moge.exporters" = "exporters", "Moge.ui" = "ui", "Moge.utils" = "utils" }
+packages = ["Moge", "Moge.core", "Moge.core.modes", "Moge.core.resources", "Moge.core.beads", "Moge.exporters", "Moge.ui", "Moge.utils"]
+package-dir = { "Moge" = ".", "Moge.core" = "core", "Moge.core.modes" = "core/modes", "Moge.core.resources" = "core/resources", "Moge.core.beads" = "core/beads", "Moge.exporters" = "exporters", "Moge.ui" = "ui", "Moge.utils" = "utils" }
 
 [tool.ruff]
 line-length = 120

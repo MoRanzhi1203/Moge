@@ -72,9 +72,18 @@ def test_empty_material_set_raises():
 
 
 def test_beads_inventory_restricts_candidates():
+    from Moge.core.materials import BEAD_CATALOG
+
     image = np.random.default_rng(4).integers(0, 256, (24, 24, 3), dtype=np.uint8)
     settings = dict(registry.default_settings("beads"))
-    settings["inventory_ids"] = ["bead:Generic:Approx:G01"]
+    settings.update(
+        {
+            "catalog": list(BEAD_CATALOG),
+            "brand": "Generic",
+            "series": "Approx",
+            "inventory_ids": ["bead:Generic:Approx:G01"],
+        }
+    )
     result = run_pipeline(image, registry.build_config("beads", GridSpec(12, 12), settings))
     assert {entry.id for entry in result.grid.entries} == {"bead:Generic:Approx:G01"}
     assert all(entry.id == "bead:Generic:Approx:G01" for entry in result.grid.entries)
@@ -150,9 +159,13 @@ def test_workbench_layout_and_palette_filters(qapp, monkeypatch):
     assert window.palette_list.count() == result.stats["used_entries"]
 
     first_name = result.grid.entries[0].name
+    from PyQt5.QtTest import QTest
+
     window.palette_search.setText(first_name)
+    QTest.qWait(250)  # 搜索输入带防抖延迟
     assert window.palette_list.count() >= 1
     window.palette_search.clear()
+    QTest.qWait(250)
     window.palette_used_only.setChecked(False)
     assert window.palette_list.count() == len(result.grid.entries)
 

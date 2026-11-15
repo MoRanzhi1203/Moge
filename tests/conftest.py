@@ -13,6 +13,8 @@ QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, _SETTINGS_DIR)
 
 # 必须在导入 PyQt5 之前设置无界面平台
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 测试使用独立的资源缓存，避免读取或污染用户本地资源库
+os.environ.setdefault("MOGE_RESOURCE_DIR", tempfile.mkdtemp(prefix="moge-resources-"))
 
 # 兼容未安装为包时直接从仓库根目录运行 pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
