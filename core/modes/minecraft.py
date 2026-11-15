@@ -4,6 +4,7 @@
 
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from Moge.core.color_spaces import delta_e_00, nearest_lab_index, srgb_to_lab
@@ -33,9 +34,17 @@ MC_DEFAULTS: dict[str, object] = {
     "exclude_transparent": False,
     "exclude_gravity": False,
     "resource_mode": "auto",
+    "matching_strategy": "perceptual",
     "texture_overrides": {},
     "texture_pack_name": "",
 }
+
+MATCHING_OPTIONS = (
+    ("perceptual", "感知色差优先（默认）"),
+    ("texture", "纹理一致性优先（实验）"),
+    ("contour", "轮廓细节优先（实验）"),
+    ("balanced", "均衡优化（实验）"),
+)
 
 VERSION_OPTIONS = tuple((version, version) for version in MC_VERSIONS)
 OBTAINABILITY_OPTIONS = (
@@ -149,6 +158,70 @@ def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
     )
 
 
+def _grid_features(image_rgb: np.ndarray, spec: GridSpec) -> tuple[np.ndarray, np.ndarray]:
+    """ 计算每个网格单元的边缘强度与亮度标准差，用于纹理/轮廓匹配 """
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    magnitude = cv2.magnitude(grad_x, grad_y)
+    size = (spec.width, spec.height)
+    mean = cv2.resize(gray, size, interpolation=cv2.INTER_AREA)
+    mean_sq = cv2.resize(gray * gray, size, interpolation=cv2.INTER_AREA)
+    std = np.sqrt(np.maximum(mean_sq - mean * mean, 0.0))
+    edge = cv2.resize(magnitude, size, interpolation=cv2.INTER_AREA) / 255.0
+    return std.reshape(-1), edge.reshape(-1)
+
+
+def _match_indices(
+    target_lab: np.ndarray,
+    target_std: np.ndarray,
+    target_edge: np.ndarray,
+    palette_lab: np.ndarray,
+    palette_lab_median: np.ndarray,
+    block_complexity: np.ndarray,
+    block_std: np.ndarray,
+    patterned: np.ndarray,
+    strategy: str,
+    batch_size: int = 512,
+) -> np.ndarray:
+    """ 按策略计算匹配代价；perceptual 保持纯 CIEDE2000 """
+    rows = len(target_lab)
+    result = np.empty(rows, dtype=np.int32)
+    for start in range(0, rows, batch_size):
+        end = min(start + batch_size, rows)
+        chunk = target_lab[start:end]
+        delta_mean = delta_e_00(chunk[:, None, :], palette_lab[None, :, :])
+        if strategy != "perceptual" and bool(patterned.any()):
+            delta_median = delta_e_00(chunk[:, None, :], palette_lab_median[None, :, :])
+            delta_color = np.where(
+                patterned[None, :], np.minimum(delta_mean, delta_median + 1.0), delta_mean
+            )
+        else:
+            delta_color = delta_mean
+        edge = target_edge[start:end, None]
+        std = target_std[start:end, None]
+        complexity = block_complexity[None, :]
+        std_diff = np.abs(std - block_std[None, :])
+        if strategy == "perceptual":
+            # 颜色优先；在 2.0 ΔE 容差内用纹理复杂度做平局裁决
+            best = np.min(delta_color, axis=1, keepdims=True)
+            allowed = delta_color <= best + 2.0
+            cost = np.where(allowed, delta_color + 1.5 * np.abs(edge - complexity), delta_color)
+        else:
+            if strategy == "texture":
+                cost = delta_color + 10.0 * np.abs(edge - complexity) + 0.06 * std_diff
+            elif strategy == "contour":
+                cost = (
+                    delta_color
+                    + 18.0 * edge * np.abs(edge - complexity)
+                    + 4.0 * (1.0 - edge) * complexity
+                )
+            else:  # balanced
+                cost = delta_color + 6.0 * np.abs(edge - complexity) + 0.04 * std_diff
+        result[start:end] = np.argmin(cost, axis=1)
+    return result
+
+
 @register_stage("map_materials")
 def stage_map_materials(context: PipelineContext):
     if context.grid_rgb is None:
@@ -174,9 +247,33 @@ def stage_map_materials(context: PipelineContext):
 
     palette_rgb = np.array([block_color(block) for block in candidates], dtype=np.uint8)
     palette_lab = srgb_to_lab(palette_rgb)
+    palette_lab_median = srgb_to_lab(
+        np.array([block.median_rgb if any(block.median_rgb) else block.rgb for block in candidates], dtype=np.uint8)
+    )
+    block_complexity = np.array([float(block.complexity) for block in candidates], dtype=np.float32)
+    block_std = np.array([float(block.brightness_std) for block in candidates], dtype=np.float32)
+    patterned = block_complexity > 0.08
     pixels = context.grid_rgb.reshape(-1, 3)
     target_lab = srgb_to_lab(pixels)
-    indices = nearest_lab_index(palette_lab, target_lab)
+    target_std, target_edge = _grid_features(context.image_rgb, context.config.grid)
+
+    strategy = str(settings.get("matching_strategy") or "perceptual")
+    if strategy not in {key for key, _ in MATCHING_OPTIONS}:
+        strategy = "perceptual"
+    if strategy == "perceptual" and not bool(patterned.any()):
+        indices = nearest_lab_index(palette_lab, target_lab)
+    else:
+        indices = _match_indices(
+            target_lab,
+            target_std,
+            target_edge,
+            palette_lab,
+            palette_lab_median,
+            block_complexity,
+            block_std,
+            patterned,
+            strategy,
+        )
 
     context.labels = indices.reshape(context.config.grid.height, context.config.grid.width)
     context.entries = [
@@ -199,6 +296,10 @@ def stage_map_materials(context: PipelineContext):
                 "texture_sha256": block.texture_sha256,
                 "texture_path": block.texture_path,
                 "verified": block.verified,
+                "complexity": block.complexity,
+                "brightness_std": block.brightness_std,
+                "median_rgb": block.median_rgb,
+                "tinted": block.tinted,
                 "texture": (
                     "real" if block.source == "mojang-resource" and block.texture_path
                     else ("user-average" if block.block_id in overrides else "approximate")
@@ -237,6 +338,27 @@ def stage_map_materials(context: PipelineContext):
     step = max(1, len(pixels) // 5000)
     matched_rgb = palette_rgb[indices[::step]]
     deltas = delta_e_00(srgb_to_lab(pixels[::step]), srgb_to_lab(matched_rgb))
+    mean_delta = float(np.mean(deltas))
+    p95_delta = float(np.percentile(deltas, 95))
+    feature_error = float(np.mean(np.abs(target_edge - block_complexity[indices])))
+    palette_limited = len(candidates) < 80
+    quality_warning = mean_delta > 8.0 or p95_delta > 15.0
+    if quality_warning:
+        quality_message = (
+            f"材料集仅 {len(candidates)} 种，平均 ΔE00 {mean_delta:.1f}、P95 {p95_delta:.1f}，"
+            "存在明显色差；建议放宽筛选或加入更多方块。"
+        )
+    else:
+        quality_message = f"匹配质量可接受：平均 ΔE00 {mean_delta:.1f}、P95 {p95_delta:.1f}。"
+    tinted_count = sum(1 for block in candidates if block.tinted)
+    transparent_count = sum(1 for block in candidates if block.transparent)
+    limitations = []
+    if tinted_count:
+        limitations.append(f"{tinted_count} 个方块使用生物群系染色贴图，预览显示灰度底，未应用 tint")
+    if transparent_count:
+        limitations.append(f"{transparent_count} 个半透明方块按不透明平均值参与匹配")
+    if palette_limited:
+        limitations.append(f"当前仅 {len(candidates)} 个候选材料，颜色空间覆盖有限")
 
     has_real = bool(real_candidates)
     renderable = sum(1 for block in candidates if block.texture_path and block.verified)
@@ -269,8 +391,14 @@ def stage_map_materials(context: PipelineContext):
             "candidate_blocks": len(candidates),
             "block_types": len(used_ids),
             "legal_rate": 1.0,
-            "mean_delta_e00": float(np.mean(deltas)),
-            "p95_delta_e00": float(np.percentile(deltas, 95)),
+            "mean_delta_e00": mean_delta,
+            "p95_delta_e00": p95_delta,
+            "matching_strategy": strategy,
+            "texture_feature_error": feature_error,
+            "quality_warning": quality_warning,
+            "quality_message": quality_message,
+            "palette_limited": palette_limited,
+            "render_limitations": limitations,
             "texture_overrides": len(overrides),
             "texture_pack": settings.get("texture_pack_name") or "",
             "resource_source": "mojang-resource" if has_real else "builtin-approx",

@@ -26,8 +26,8 @@ def _guess_category(block_id: str) -> str:
     rules = (
         ("concrete", "concrete"),
         ("wool", "wool"),
-        ("terracotta", "terracotta"),
         ("glazed", "glazed"),
+        ("terracotta", "terracotta"),
         ("planks", "planks"),
         ("_log", "log"),
         ("_stem", "log"),
