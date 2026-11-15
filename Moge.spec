@@ -9,7 +9,7 @@ a = Analysis(
     [str(_spec_dir / 'main.py')],
     pathex=[str(_spec_dir.parent), str(_spec_dir)],
     binaries=[],
-    datas=[],
+    datas=[(str(_spec_dir / 'assets'), 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

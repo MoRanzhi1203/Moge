@@ -1,0 +1,20 @@
+manifest images: 19
+welcome buttons: 打开图片 打开工程 使用示例图片
+screenshot sample-welcome.png
+dialog entries: 19 categories: 9
+screenshot sample-gallery.png
+after double-click: accepted=1 recommended=True
+double-click loaded: portraits-1.jpg grid 40x64
+loaded: 处理完成：kmeans_lab · 57 ms
+screenshot sample-loaded.png
+mode pixel grid GridSpec(width=40, height=64) palette 16
+screenshot sample-mode-pixel.png
+mode minecraft grid GridSpec(width=40, height=64) palette 348
+screenshot sample-mode-minecraft.png
+mode beads grid GridSpec(width=40, height=64) palette 221
+screenshot sample-mode-beads.png
+transparent sample alpha min/max: 0 255
+screenshot sample-transparent.png
+catalog palette without image: 221 scope all
+screenshot sample-palette-no-image.png
+screenshot sample-bead-info.png

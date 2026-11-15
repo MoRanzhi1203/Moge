@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -60,6 +61,7 @@ from Moge.core.materials import (
     MC_VERSIONS,
     BeadColor,
     board_partitions,
+    filter_beads,
     load_bead_catalog_csv,
     load_bead_inventory_csv,
     load_resource_pack_zip,
@@ -136,6 +138,7 @@ class MainWindow(QMainWindow):
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
+        self._show_welcome()
 
     @staticmethod
     def _load_bead_palette():
@@ -207,10 +210,15 @@ class MainWindow(QMainWindow):
         self.left_content = left_content
         self.splitter.addWidget(left_scroll)
 
-        # 中央画布
+        # 中央：欢迎页 / 画布
+        self.center_stack = QStackedWidget()
+        self.welcome = self._build_welcome()
         self.canvas = GridCanvas()
         self.canvas.setMinimumWidth(280)
-        self.splitter.addWidget(self.canvas)
+        self.center_stack.addWidget(self.welcome)
+        self.center_stack.addWidget(self.canvas)
+        self.center_stack.setCurrentWidget(self.welcome)
+        self.splitter.addWidget(self.center_stack)
 
         # 右侧：调色板 + 统计
         self.right_tabs = QTabWidget()
@@ -253,6 +261,43 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.progress)
         status.addPermanentWidget(self.btn_cancel)
 
+    def _build_welcome(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addStretch(1)
+        title = QLabel("墨格 Moge 2.0")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 30px; font-weight: bold; color: #6d9bff;")
+        subtitle = QLabel("像素艺术 / Minecraft 方块画 / 拼豆图纸")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("font-size: 14px; color: #9fb2c8;")
+        hint = QLabel("尚未打开图片。可以打开本地图片、恢复工程，或使用内置示例图库。")
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addSpacing(18)
+        layout.addWidget(hint)
+        layout.addSpacing(18)
+        self.btn_welcome_open = QPushButton("打开图片")
+        self.btn_welcome_project = QPushButton("打开工程")
+        self.btn_welcome_samples = QPushButton("使用示例图片")
+        for button in (self.btn_welcome_open, self.btn_welcome_project, self.btn_welcome_samples):
+            button.setFixedWidth(240)
+            button.setMinimumHeight(38)
+            layout.addWidget(button, 0, Qt.AlignHCenter)
+            layout.addSpacing(8)
+        layout.addStretch(1)
+        self.btn_welcome_open.clicked.connect(lambda: self.open_image())
+        self.btn_welcome_project.clicked.connect(self.open_project)
+        self.btn_welcome_samples.clicked.connect(self.open_sample_library)
+        return page
+
+    def _show_welcome(self):
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentWidget(self.welcome)
+
+
     def _build_palette_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -269,9 +314,14 @@ class MainWindow(QMainWindow):
         self.palette_sort.addItem("用量降序", "count")
         self.palette_sort.addItem("名称", "name")
         self.palette_sort.addItem("色相", "hue")
+        self.palette_scope = QComboBox()
+        self.palette_scope.addItem("已用颜色", "used")
+        self.palette_scope.addItem("全部颜色", "all")
         self.palette_used_only = QCheckBox("仅已用")
+        self.palette_used_only.setChecked(True)
+        self.palette_used_only.setVisible(False)
         filter_row.addWidget(self.palette_sort, 1)
-        filter_row.addWidget(self.palette_used_only)
+        filter_row.addWidget(self.palette_scope)
         layout.addLayout(filter_row)
 
         self.palette_list = QListWidget()
@@ -443,10 +493,12 @@ class MainWindow(QMainWindow):
         self.bead_family = QComboBox()
         self.bead_material = QComboBox()
         self.btn_import_beads = QPushButton("导入色卡 CSV...")
+        self.btn_bead_info = QPushButton("色卡详情...")
         self.bead_catalog_note = QLabel("内置近似色卡，未验证")
         self.bead_catalog_note.setWordWrap(True)
         self.bead_source_note = QLabel("")
         self.bead_source_note.setWordWrap(True)
+        self.bead_source_note.setVisible(False)
         self.bead_inventory = QLineEdit()
         self.bead_inventory.setPlaceholderText("库存色号，逗号分隔；留空=全部")
         self.bead_disabled = QLineEdit()
@@ -457,6 +509,7 @@ class MainWindow(QMainWindow):
         form.addRow("色系:", self.bead_family)
         form.addRow("材质:", self.bead_material)
         form.addRow("", self.btn_import_beads)
+        form.addRow("", self.btn_bead_info)
         form.addRow("", self.bead_catalog_note)
         form.addRow("", self.bead_source_note)
         form.addRow("库存:", self.bead_inventory)
@@ -511,6 +564,8 @@ class MainWindow(QMainWindow):
         self.act_save_project = QAction("保存工程", self)
         self.act_save_project.setShortcut(QKeySequence.Save)
         toolbar.addActions([self.act_open, self.act_open_project, self.act_save_project])
+        self.act_samples = QAction("示例图库", self)
+        toolbar.addAction(self.act_samples)
         toolbar.addSeparator()
 
         self.act_undo = QAction("撤销", self)
@@ -575,6 +630,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_open)
         file_menu.addAction(self.act_open_project)
         file_menu.addAction(self.act_save_project)
+        file_menu.addAction(self.act_samples)
         self.act_export_png = QAction("导出 PNG...", self)
         self.act_export_csv = QAction("导出材料 CSV...", self)
         self.act_export_pdf = QAction("导出图纸 PDF...", self)
@@ -637,6 +693,7 @@ class MainWindow(QMainWindow):
         ]
 
         self._connect_action(self.act_open, lambda: self.open_image())
+        self._connect_action(self.act_samples, self.open_sample_library)
         self._connect_action(self.act_open_project, self.open_project)
         self._connect_action(self.act_save_project, self.save_project)
         self._connect_action(self.act_export_png, self.export_png_file)
@@ -659,6 +716,7 @@ class MainWindow(QMainWindow):
         self.act_sidebar.toggled.connect(self._set_sidebar_visible)
         self.tool_group.triggered.connect(self._on_tool_changed)
         self.btn_import_beads.clicked.connect(self.import_bead_catalog)
+        self.btn_bead_info.clicked.connect(self.show_bead_info)
         self.btn_import_pack.clicked.connect(self.import_minecraft_pack)
         self.btn_import_inventory.clicked.connect(self.import_bead_inventory)
         self.btn_mc_diagnose.clicked.connect(self.show_mc_diagnostics)
@@ -681,7 +739,8 @@ class MainWindow(QMainWindow):
         self.palette_list.currentRowChanged.connect(self._on_palette_selected)
         self.palette_search.textChanged.connect(lambda _text: self._palette_timer.start())
         self.palette_sort.currentIndexChanged.connect(lambda _index: self._refresh_palette())
-        self.palette_used_only.toggled.connect(lambda _checked: self._refresh_palette())
+        self.palette_scope.currentIndexChanged.connect(self._on_palette_scope_changed)
+        self.palette_used_only.toggled.connect(self._on_palette_used_only_toggled)
         self.mc_edition.currentIndexChanged.connect(self._on_mc_context_changed)
         self.mc_version.currentIndexChanged.connect(self._on_mc_context_changed)
         self.mc_obtain.currentIndexChanged.connect(self._on_mc_context_changed)
@@ -712,6 +771,7 @@ class MainWindow(QMainWindow):
         self.palette_used_only.blockSignals(True)
         self.palette_used_only.setChecked(self.mode == "beads")
         self.palette_used_only.blockSignals(False)
+        self._sync_palette_scope()
         self._apply_settings_to_panels(self.mode, self.mode_settings[self.mode])
         self.selection_anchor = None
         self._stroke_pending = False
@@ -920,7 +980,7 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("Minecraft 版本资源已更新")
 
     # ---------- 文件 ---------- #
-    def open_image(self, path: str = None):
+    def open_image(self, path: str = None, suggested_spec: GridSpec = None, keep_grid: bool = False):
         if self._thread is not None:
             return
         if not path:
@@ -942,15 +1002,19 @@ class MainWindow(QMainWindow):
         self.documents.clear()
         self.selected_entry = 0
 
-        target = 64
-        if width >= height:
-            grid_width = min(256, max(8, target))
-            grid_height = min(256, max(8, round(target * height / width)))
-        else:
-            grid_height = min(256, max(8, target))
-            grid_width = min(256, max(8, round(target * width / height)))
-        self.grid_width.setValue(grid_width)
-        self.grid_height.setValue(grid_height)
+        if suggested_spec is not None:
+            self.grid_width.setValue(max(4, min(256, suggested_spec.width)))
+            self.grid_height.setValue(max(4, min(256, suggested_spec.height)))
+        elif not keep_grid:
+            target = 64
+            if width >= height:
+                grid_width = min(256, max(8, target))
+                grid_height = min(256, max(8, round(target * height / width)))
+            else:
+                grid_height = min(256, max(8, target))
+                grid_width = min(256, max(8, round(target * width / height)))
+            self.grid_width.setValue(grid_width)
+            self.grid_height.setValue(grid_height)
 
         self._display_source()
         self.canvas.set_reference_image(self.original_img)
@@ -965,6 +1029,34 @@ class MainWindow(QMainWindow):
         self._update_action_states()
         self.lbl_status.setText(f"已打开 {Path(path).name} ({width}x{height})")
         logger.info("打开图片：%s (%sx%s)", path, width, height)
+
+    def open_sample_library(self):
+        from Moge.core.samples import image_path, recommended_grid
+        from Moge.ui.sample_dialog import SampleLibraryDialog
+
+        dialog = SampleLibraryDialog(self)
+        if dialog.exec_() != QDialog.Accepted or not dialog.selected_entry:
+            return
+        entry = dialog.selected_entry
+        path = image_path(entry)
+        if not path.is_file():
+            QMessageBox.warning(self, "示例图片缺失", f"找不到内置图片：{path}")
+            return
+        if self.original_img is not None or self.results:
+            answer = QMessageBox.question(
+                self,
+                "加载示例图片",
+                "当前画布已有内容，加载示例图片会替换当前作品（未保存的更改将丢失）。是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        spec = recommended_grid(entry) if dialog.use_recommended else None
+        self.open_image(str(path), suggested_spec=spec, keep_grid=not dialog.use_recommended)
+        self.lbl_status.setText(
+            f"已加载示例：{entry.get('title')}（{entry.get('author')} · {entry.get('license')}）"
+        )
 
     def open_project(self):
         path, _ = QFileDialog.getOpenFileName(self, "打开工程", "", PROJECT_FILTER)
@@ -1103,6 +1195,11 @@ class MainWindow(QMainWindow):
             note += f"，跳过 {len(errors)} 行"
         self.bead_inventory_note.setText(note)
         self.lbl_status.setText(note)
+
+    def show_bead_info(self):
+        from Moge.ui.bead_info_dialog import BeadPaletteInfoDialog
+
+        BeadPaletteInfoDialog(self).exec_()
 
     def show_mc_diagnostics(self):
         settings = self._collect_settings("minecraft")
@@ -1397,6 +1494,7 @@ class MainWindow(QMainWindow):
 
     def _display_result(self, result: RenderResult):
         document = self._sync_document(result)
+        self.center_stack.setCurrentWidget(self.canvas)
         self.canvas.set_image(
             document.render(self.preview_style),
             (result.grid.spec.width, result.grid.spec.height),
@@ -1413,7 +1511,9 @@ class MainWindow(QMainWindow):
     def _display_source(self):
         if self.original_img is None:
             self.canvas.set_image(None)
+            self._show_welcome()
             return
+        self.center_stack.setCurrentWidget(self.canvas)
         height, width = self.original_img.shape[:2]
         self.canvas.set_image(self.original_img, (width, height))
         self.canvas.set_editable(False)
@@ -1539,6 +1639,41 @@ class MainWindow(QMainWindow):
         self.right_tabs.setCurrentIndex(1)
         self.lbl_status.setText(f"({col}, {row}) {entry.name}")
 
+    def _bead_catalog_entries(self) -> list:
+        """ 无作品时用于调色板预览的品牌色卡条目 """
+        from Moge.core.models import PaletteEntry
+
+        brand = self.bead_brand.currentData() or ""
+        series = self.bead_series.currentData() or ""
+        items = filter_beads(
+            self.bead_catalog,
+            brand=brand,
+            series=series,
+            size=self.bead_size.currentData() or None,
+            color_family=self.bead_family.currentData() or None,
+            material=self.bead_material.currentData() or None,
+        )
+        return [
+            PaletteEntry(
+                id=item.id,
+                name=item.display_name,
+                rgb=item.rgb,
+                source=item.source,
+                meta={
+                    "brand": item.brand,
+                    "series": item.series,
+                    "code": item.code,
+                    "size": item.size,
+                    "color_family": item.color_family,
+                    "material": item.material,
+                    "trust": item.trust,
+                    "source_url": item.source_url,
+                    "license": item.license,
+                },
+            )
+            for item in items
+        ]
+
     def _refresh_palette(self):
         if self._palette_building:
             return
@@ -1547,18 +1682,32 @@ class MainWindow(QMainWindow):
         self.palette_list.blockSignals(True)
         self.palette_list.clear()
         result = self._current_result()
-        if result is None:
+        show_counts = result is not None
+        if result is not None:
+            entries = result.grid.entries
+            counts = result.stats.get("counts", {})
+            used_only = self.palette_used_only.isChecked()
+            mode = result.mode
+        elif self.mode == "beads":
+            entries = self._bead_catalog_entries()
+            counts = {}
+            used_only = False
+            mode = "beads"
+            if self.palette_used_only.isChecked():
+                self.palette_used_only.blockSignals(True)
+                self.palette_used_only.setChecked(False)
+                self.palette_used_only.blockSignals(False)
+                self._sync_palette_scope()
+        else:
             self.palette_list.blockSignals(False)
             self._palette_building = False
             return
 
-        counts = result.stats.get("counts", {})
         query = self.palette_search.text().strip().lower()
-        used_only = self.palette_used_only.isChecked()
         sort_key = self.palette_sort.currentData()
 
         rows = []
-        for index, entry in enumerate(result.grid.entries):
+        for index, entry in enumerate(entries):
             count = int(counts.get(entry.id, 0))
             if used_only and count <= 0:
                 continue
@@ -1587,7 +1736,7 @@ class MainWindow(QMainWindow):
                     self._icon_cache.clear()
                 self._icon_cache[key] = icon
             label = entry.name
-            if result.mode == "minecraft":
+            if mode == "minecraft":
                 texture = entry.meta.get("texture")
                 if texture == "real":
                     label += " [真实]"
@@ -1595,7 +1744,7 @@ class MainWindow(QMainWindow):
                     label += " [贴图]"
                 else:
                     label += " [近似]"
-            elif result.mode == "beads":
+            elif mode == "beads":
                 meta = entry.meta
                 badges = []
                 if meta.get("material") and meta.get("material") != "solid":
@@ -1605,9 +1754,12 @@ class MainWindow(QMainWindow):
                 label = f"{meta.get('code', '')} {entry.name}"
                 if badges:
                     label += " [" + "/".join(badges) + "]"
-            item = QListWidgetItem(icon, f"{label}  ×{count}")
+            suffix = f"  ×{count}" if show_counts else ""
+            item = QListWidgetItem(icon, f"{label}{suffix}")
             item.setData(Qt.UserRole, index)
-            item.setToolTip(f"{entry.name}\n{entry.id}\n用量 {count}")
+            item.setToolTip(
+                f"{entry.name}\n{entry.id}" + (f"\n用量 {count}" if show_counts else "\n示例色卡（未处理）")
+            )
             self.palette_list.addItem(item)
 
         visible_indices = [row[0] for row in rows]
@@ -1624,6 +1776,29 @@ class MainWindow(QMainWindow):
             item = self.palette_list.item(row)
             if item is not None:
                 self.selected_entry = int(item.data(Qt.UserRole))
+
+    def _on_palette_scope_changed(self, _index=None):
+        scope = self.palette_scope.currentData() or "used"
+        self.palette_used_only.blockSignals(True)
+        self.palette_used_only.setChecked(scope == "used")
+        self.palette_used_only.blockSignals(False)
+        self._refresh_palette()
+
+    def _on_palette_used_only_toggled(self, checked):
+        self.palette_scope.blockSignals(True)
+        index = self.palette_scope.findData("used" if checked else "all")
+        if index >= 0:
+            self.palette_scope.setCurrentIndex(index)
+        self.palette_scope.blockSignals(False)
+        self._refresh_palette()
+
+    def _sync_palette_scope(self):
+        scope = "used" if self.palette_used_only.isChecked() else "all"
+        self.palette_scope.blockSignals(True)
+        index = self.palette_scope.findData(scope)
+        if index >= 0:
+            self.palette_scope.setCurrentIndex(index)
+        self.palette_scope.blockSignals(False)
 
     def _refresh_stats(self):
         result = self._current_result()
@@ -2000,7 +2175,9 @@ class MainWindow(QMainWindow):
             self,
             "关于 Moge",
             "墨格 Moge 2.0\n像素艺术 / Minecraft 方块画 / 拼豆图纸\n\n"
-            "内置 Minecraft 与拼豆色值为屏幕近似，未包含受版权保护的贴图。",
+            "内置示例图片来自 Wikimedia Commons，仅使用 CC0 / Public Domain / CC BY 许可；"
+            "作者、来源与许可见示例图库详情及 assets/samples/CREDITS.md。\n\n"
+            "Minecraft 原版贴图需由用户从官方资源获取，不随安装包分发。",
         )
 
     def _update_action_states(self):
@@ -2075,13 +2252,16 @@ class MainWindow(QMainWindow):
             source_names = "、".join(
                 f"{source.get('name')} ({source.get('license')})" for source in meta.get("sources", [])
             )
+            brand = self.bead_brand.currentData() or "-"
+            series = self.bead_series.currentData() or "-"
             self.bead_catalog_note.setText(
-                f"SQLite 色卡库：{len(self.bead_catalog)} 色 / {len(meta.get('palettes') or [])} 个系列；"
-                f"官方 {trust.get('official', 0)} · 社区 {trust.get('community', 0)} · "
-                f"采样 {trust.get('sampled', 0)} · 未知 {trust.get('unknown', 0)}；冲突 "
-                f"{meta.get('conflicts', 0)} 条（保留双份）"
+                f"SQLite 色卡 · {brand} {series} · {len(self.bead_catalog)} 色 · MIT"
             )
-            self.bead_source_note.setText(f"数据源：{source_names}；更新：{meta.get('updated_at') or '-'}")
+            self.bead_source_note.setText(
+                f"官方 {trust.get('official', 0)} · 社区 {trust.get('community', 0)} · "
+                f"采样 {trust.get('sampled', 0)}；冲突 {meta.get('conflicts', 0)} 条；"
+                f"数据源：{source_names}；更新：{meta.get('updated_at') or '-'}"
+            )
         else:
             source_label = "用户导入" if imported else "内置近似"
             self.bead_catalog_note.setText(
@@ -2189,4 +2369,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("sidebar_visible", self.act_sidebar.isChecked())
         self.settings.setValue("mode", self.mode)
         self.settings.setValue("theme", self._theme)
+        # 释放图像与结果，避免关闭窗口后仍持有大数组
+        self.original_img = None
+        self.results.clear()
+        self.documents.clear()
+        self.canvas.set_image(None)
         super().closeEvent(event)
