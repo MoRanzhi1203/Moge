@@ -32,6 +32,7 @@ MC_DEFAULTS: dict[str, object] = {
     "orientation": "any",
     "exclude_transparent": False,
     "exclude_gravity": False,
+    "resource_mode": "auto",
     "texture_overrides": {},
     "texture_pack_name": "",
 }
@@ -67,14 +68,43 @@ def build_config(spec: GridSpec, settings: dict[str, object]) -> PipelineConfig:
     )
 
 
+def _real_blocks(edition: str, version: str) -> list:
+    """ 尝试从本地资源库加载真实方块；失败或未下载返回空列表 """
+    try:
+        from Moge.core.resources.manager import ResourceManager
+
+        with ResourceManager() as manager:
+            return manager.build_catalog(edition, version)
+    except Exception:
+        return []
+
+
 def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
     version = str(settings.get("version", "1.20.1"))
-    if version not in MC_VERSIONS:
-        raise ValueError(f"未索引的 Minecraft 版本：{version}")
+    edition = str(settings.get("edition", "java"))
+    if version not in MC_VERSIONS and edition == "java":
+        # 动态扩展的 Java 版本允许由官方清单提供
+        manifest_versions = set()
+        try:
+            from Moge.core.resources.java import list_versions, load_manifest
+
+            manifest_versions = {item["id"] for item in list_versions(load_manifest(), release_only=False)}
+        except Exception:
+            manifest_versions = set()
+        if version not in manifest_versions:
+            raise ValueError(f"未索引的 Minecraft 版本：{version}")
     max_cost = settings.get("max_cost_tier")
+    resource_mode = str(settings.get("resource_mode", "auto"))
+    base_blocks = None
+    if resource_mode in ("auto", "real"):
+        real = _real_blocks(edition, version)
+        if real:
+            base_blocks = real
+        elif resource_mode == "real":
+            raise ValueError(f"{edition} {version} 的真实资源尚未下载，请在“版本资源管理”中获取")
     return filter_blocks(
         version=version,
-        edition=str(settings.get("edition", "java")),
+        edition=edition,
         categories=settings.get("categories") or None,
         obtainability=str(settings.get("obtainability", "any")),
         buildable_only=bool(settings.get("buildable_only", True)),
@@ -84,6 +114,7 @@ def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
         orientation=str(settings.get("orientation", "any")),
         exclude_transparent=bool(settings.get("exclude_transparent", False)),
         exclude_gravity=bool(settings.get("exclude_gravity", False)),
+        blocks=base_blocks,
     )
 
 
@@ -128,7 +159,10 @@ def stage_map_materials(context: PipelineContext):
                 "gravity": block.gravity,
                 "orientation": block.orientation,
                 "visible_face": block.visible_face,
-                "texture": "user-average" if block.block_id in overrides else "approximate",
+                "texture": (
+                    "real" if block.source == "mojang-resource"
+                    else ("user-average" if block.block_id in overrides else "approximate")
+                ),
             },
         )
         for block in candidates
@@ -168,7 +202,16 @@ def stage_map_materials(context: PipelineContext):
             "p95_delta_e00": float(np.percentile(deltas, 95)),
             "texture_overrides": len(overrides),
             "texture_pack": settings.get("texture_pack_name") or "",
-            "note": DISPLAY_NOTE + (
+            "resource_source": (
+                "mojang-resource" if any(block.source == "mojang-resource" for block in candidates)
+                else "builtin-approx"
+            ),
+            "note": (
+                f"使用 Mojang 官方资源包解析的真实贴图（{settings.get('edition')} {settings.get('version')}）；"
+                "获取条件仍来自近似元数据，未逐一验证。"
+                if any(block.source == "mojang-resource" for block in candidates)
+                else DISPLAY_NOTE
+            ) + (
                 f" 已加载用户资源包 {settings.get('texture_pack_name') or ''} 的 {len(overrides)} 个贴图（平均色）。"
                 if overrides
                 else ""

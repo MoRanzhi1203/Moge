@@ -7,7 +7,7 @@
 ## 功能
 
 - **普通像素化**：块均值 / 块频数 / 最近像素采样，RGB/Lab K-Means、MiniBatch、Ward 合并，颜色数控制、固定种子、孤立色块清理。
-- **Minecraft 方块画**：内置近似方块库，按 Java/基岩、精确版本、材质类别、获取条件、成本等级、朝向、透明/重力限制筛选；结果 100% 合法；支持用户资源包 ZIP（只读，取贴图平均色）；提供筛选诊断。
+- **Minecraft 方块画**：可在“版本资源管理”中自动获取 Mojang 官方 Java 客户端 JAR 与 Bedrock 官方样例资源，解析真实 blockstate/model/texture（Java）与 terrain_texture/blocks.json（Bedrock）；按 Java/基岩、精确版本、材质类别、获取条件、成本等级、朝向、透明/重力限制筛选；结果 100% 合法；支持用户资源包 ZIP（只读，取贴图平均色）与筛选诊断。
 - **拼豆图纸**：内置近似色卡与用户 CSV 色卡；品牌/系列隔离、库存 CSV、禁用色号、颜色数量统计、底板分页、采购包数（每包数量可配置）与 PDF/CSV 导出；默认只显示已用颜色。
 - **工作台**：三模式切换保留源图，可缩放/平移/网格叠层画布，原图对比、重置视图、坐标定位，画笔/填充/吸管/替换/撤销/重做，浅色/深色主题，后台任务进度与取消，任务 ID 防止旧结果覆盖。
 - **调色板**：搜索、按用量/名称/色相排序、仅显示已用颜色/材料；调色板与统计侧栏可收起。
@@ -42,9 +42,20 @@ moge
 
 ### Minecraft 资源包
 
-- 只支持 Java 版资源包 ZIP；读取 `assets/minecraft/textures/block/*.png` 的平均色。
-- 不复制、不上传任何游戏资产；仓库不包含原版贴图。
-- 资源包只影响颜色近似，不解析模型、多面贴图或生物群系染色。
+- Java 版与 Bedrock 版可在 GUI 的“版本资源管理”中一键获取；资源缓存在 `%LOCALAPPDATA%\Moge\resources`，不进入 Git 仓库。
+- 命令行入口：
+
+```powershell
+python -m Moge.core.resources.cli list --edition java --limit 20
+python -m Moge.core.resources.cli fetch --edition java --version 1.20.1
+python -m Moge.core.resources.cli fetch --edition bedrock --version 1.20.80
+python -m Moge.core.resources.cli fetch-range --start 1.20 --end 1.20.2 --dry-run
+python -m Moge.core.resources.cli verify --edition java --version 1.20.1 --full
+python -m Moge.core.resources.cli report
+```
+
+- Bedrock 目标 Release 可能没有附件，系统会回退到 Mojang 官方 tag 源码归档，并在报告中标注该来源与摘要限制。
+- 仓库不包含 Minecraft 原版贴图；仅在本机缓存，不自动提交或上传。
 
 ### 拼豆色卡 CSV
 
@@ -78,6 +89,7 @@ pyinstaller --noconfirm Moge.spec
 
 - [架构说明](docs/Moge-2.0-Architecture.md)
 - [Minecraft 资源与筛选](docs/Minecraft-Assets-And-Filtering.md)
+- [Minecraft 资源获取与索引报告](docs/minecraft-resource-acquisition-report.md)
 - [拼豆色卡与图纸](docs/Beads-Palette-And-Blueprints.md)
 - [聚类与复合管线基准](docs/Clustering-Benchmarks.md)
 - [验收记录](docs/Moge-2.0-Acceptance.md)

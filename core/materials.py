@@ -171,6 +171,7 @@ def filter_blocks(
     orientation: str = "any",
     exclude_transparent: bool = False,
     exclude_gravity: bool = False,
+    blocks: Optional[Iterable[MinecraftBlock]] = None,
 ) -> list[MinecraftBlock]:
     """ 按版本、类别、获取条件、朝向与建造限制筛选合法候选方块 """
     category_set: Optional[set[str]] = set(categories) if categories else None
@@ -178,7 +179,7 @@ def filter_blocks(
     exclude_set = set(excluded_ids) if excluded_ids else set()
 
     result: list[MinecraftBlock] = []
-    for block in MC_BLOCKS:
+    for block in (blocks if blocks is not None else MC_BLOCKS):
         if not block.available_in(version, edition):
             continue
         if category_set is not None and block.category not in category_set:

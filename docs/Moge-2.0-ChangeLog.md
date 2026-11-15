@@ -1,5 +1,14 @@
 # Moge 2.0 变更记录
 
+## 2026-11-15 · Minecraft 真实资源获取系统
+
+- 新增 `core/resources/`：Mojang 版本清单、客户端 JAR 下载/校验、Bedrock Releases/tag 归档、安全 ZIP、SQLite 索引、颜色/复杂度特征、CLI。
+- Java 解析 blockstate → model → texture，兼容 1.12 旧版 `textures/blocks` 与无前缀模型引用；Bedrock 解析 `terrain_texture.json`、`blocks.json` 与材质实例，支持 JSONC 注释。
+- 新增 GUI“版本资源管理”：刷新/搜索版本、单/批量获取、进度与取消、校验、删除、重建、版本差异、真实贴图预览。
+- Minecraft 模式接入真实候选集与 `[真实]/[近似]` 标识；资源来源可切换“自动优先真实 / 仅真实 / 内置近似”，未下载版本会提示打开资源管理。
+- 实测：Java 1.12.2/1.16.5/1.18.2/1.20.1/1.21.4，Bedrock 1.20.80/1.21.50；7 版本、6139 方块、2107 贴图；缓存 286.5 MB；`verify` 4035 面通过。
+- 测试 117 项、核心覆盖率 83%、ruff 0；打包 241.2 MB / 220 文件。详见 `docs/minecraft-resource-acquisition-report.md`。
+
 ## 2026-11-15 · 第二轮界面与功能优化
 
 - 布局：三栏不可折叠、左右最小宽度、画布优先；左侧按基础/模式/高级分组；右侧调色板搜索/排序/仅已用、侧栏收起；输入控件与列表最小宽度收紧，消除水平滚动与裁切；启动尺寸按屏幕自适应。

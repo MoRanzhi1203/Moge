@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_actions()
         self._connect_signals()
+        self._refresh_mc_versions()
         self._restore_window_state()
         self._set_busy(False)
         self._refresh_palette()
@@ -359,20 +360,27 @@ class MainWindow(QMainWindow):
         self.mc_orientation.addItem("朝向依赖", "facing")
         self.mc_exclude_transparent = QCheckBox("排除透明方块")
         self.mc_exclude_gravity = QCheckBox("排除重力方块")
+        self.mc_resource_mode = QComboBox()
+        self.mc_resource_mode.addItem("自动（优先真实贴图）", "auto")
+        self.mc_resource_mode.addItem("仅真实贴图", "real")
+        self.mc_resource_mode.addItem("内置近似色", "approx")
         advanced_form.addRow("成本偏好:", self.mc_cost)
         advanced_form.addRow("", self.mc_buildable)
         advanced_form.addRow("朝向:", self.mc_orientation)
         advanced_form.addRow("", self.mc_exclude_transparent)
         advanced_form.addRow("", self.mc_exclude_gravity)
+        advanced_form.addRow("资源来源:", self.mc_resource_mode)
         advanced_layout.addLayout(advanced_form)
 
         self.btn_import_pack = QPushButton("导入资源包 ZIP...")
         self.mc_pack_note = QLabel("未加载用户资源包")
         self.mc_pack_note.setWordWrap(True)
         self.btn_mc_diagnose = QPushButton("筛选诊断")
+        self.btn_manage_resources = QPushButton("版本资源管理...")
         advanced_layout.addWidget(self.btn_import_pack)
         advanced_layout.addWidget(self.mc_pack_note)
         advanced_layout.addWidget(self.btn_mc_diagnose)
+        advanced_layout.addWidget(self.btn_manage_resources)
         layout.addWidget(advanced_group)
 
         note = QLabel(minecraft_mode.DISPLAY_NOTE)
@@ -563,6 +571,8 @@ class MainWindow(QMainWindow):
         self.btn_import_pack.clicked.connect(self.import_minecraft_pack)
         self.btn_import_inventory.clicked.connect(self.import_bead_inventory)
         self.btn_mc_diagnose.clicked.connect(self.show_mc_diagnostics)
+        self.btn_manage_resources.clicked.connect(self.open_resource_manager)
+        self.mc_edition.currentIndexChanged.connect(lambda _index: self._refresh_mc_versions())
         self.btn_cancel.clicked.connect(self.cancel_task)
 
     def _connect_action(self, action, function):
@@ -641,6 +651,7 @@ class MainWindow(QMainWindow):
                 "orientation": self.mc_orientation.currentData(),
                 "exclude_transparent": self.mc_exclude_transparent.isChecked(),
                 "exclude_gravity": self.mc_exclude_gravity.isChecked(),
+                "resource_mode": self.mc_resource_mode.currentData(),
                 "texture_overrides": dict(self.mc_texture_overrides),
                 "texture_pack_name": self.mc_texture_pack_name,
             }
@@ -692,6 +703,7 @@ class MainWindow(QMainWindow):
             self._set_combo_data(self.mc_orientation, settings.get("orientation", "any"))
             self.mc_exclude_transparent.setChecked(bool(settings.get("exclude_transparent", False)))
             self.mc_exclude_gravity.setChecked(bool(settings.get("exclude_gravity", False)))
+            self._set_combo_data(self.mc_resource_mode, settings.get("resource_mode", "auto"))
         else:
             catalog = settings.get("catalog")
             if catalog:
@@ -732,6 +744,58 @@ class MainWindow(QMainWindow):
         index = combo.findData(value)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    @staticmethod
+    def _version_sort_key(value: str):
+        from Moge.core.resources.java import parse_version_tuple
+
+        return parse_version_tuple(value) or (0,)
+
+    def _refresh_mc_versions(self):
+        """ 合并静态版本与本地已下载真实资源版本 """
+        if not hasattr(self, "mc_version"):
+            return
+        edition = self.mc_edition.currentData() or "java"
+        if edition == "java":
+            versions = list(MC_VERSIONS)
+        else:
+            from Moge.core.resources.bedrock import TARGET_VERSIONS
+
+            versions = list(TARGET_VERSIONS)
+        downloaded = set()
+        try:
+            from Moge.core.resources.manager import ResourceManager
+
+            with ResourceManager() as manager:
+                for row in manager.versions(edition):
+                    if row["version"] not in versions:
+                        versions.append(row["version"])
+                    if row["status"] == "ready":
+                        downloaded.add(row["version"])
+        except Exception:
+            downloaded = set()
+
+        current = self.mc_version.currentData()
+        self.mc_version.blockSignals(True)
+        self.mc_version.clear()
+        for version in sorted(versions, key=self._version_sort_key):
+            label = version + (" [真实]" if version in downloaded else "")
+            self.mc_version.addItem(label, version)
+        index = self.mc_version.findData(current)
+        if index >= 0:
+            self.mc_version.setCurrentIndex(index)
+        self.mc_version.blockSignals(False)
+
+    def open_resource_manager(self):
+        from Moge.ui.resource_dialog import ResourceManagerDialog
+
+        dialog = ResourceManagerDialog(self)
+        dialog.resourcesChanged.connect(self._on_resources_changed)
+        dialog.exec_()
+
+    def _on_resources_changed(self):
+        self._refresh_mc_versions()
+        self.lbl_status.setText("Minecraft 版本资源已更新")
 
     # ---------- 文件 ---------- #
     def open_image(self, path: str = None):
@@ -1029,6 +1093,13 @@ class MainWindow(QMainWindow):
             return
         logger.error("处理失败：%s", message)
         self.lbl_status.setText("处理失败")
+        if "真实资源尚未下载" in message:
+            answer = QMessageBox.question(
+                self, "缺少真实资源", message + "\n\n是否打开版本资源管理？"
+            )
+            if answer == QMessageBox.Yes:
+                self.open_resource_manager()
+            return
         QMessageBox.critical(self, "错误", f"处理失败：{message}")
 
     def _on_cancelled(self, task_id):
@@ -1116,7 +1187,13 @@ class MainWindow(QMainWindow):
             pixmap.fill(QColor(*entry.rgb))
             label = entry.name
             if result.mode == "minecraft":
-                label += " [贴图]" if entry.meta.get("texture") == "user-average" else " [近似]"
+                texture = entry.meta.get("texture")
+                if texture == "real":
+                    label += " [真实]"
+                elif texture == "user-average":
+                    label += " [贴图]"
+                else:
+                    label += " [近似]"
             elif result.mode == "beads":
                 label = f"{entry.meta.get('code', '')} {entry.name}"
             item = QListWidgetItem(QIcon(pixmap), f"{label}  ×{count}")
@@ -1165,6 +1242,7 @@ class MainWindow(QMainWindow):
                 f"<p><b>版本</b>：{stats.get('edition')} {stats.get('version')}<br>"
                 f"<b>候选方块</b>：{stats.get('candidate_blocks')}<br>"
                 f"<b>方块种类</b>：{stats.get('block_types')}<br>"
+                f"<b>合成来源</b>：{'Mojang 真实贴图' if stats.get('resource_source') == 'mojang-resource' else '内置近似色'}<br>"
                 f"<b>合法率</b>：{stats.get('legal_rate', 0) * 100:.1f}%<br>"
                 f"<b>贴图覆盖</b>：{stats.get('texture_overrides', 0)}"
                 f"（{stats.get('texture_pack') or '无资源包'}）<br>"

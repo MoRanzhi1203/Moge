@@ -9,12 +9,12 @@
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | 静态检查 | `ruff check .` | 通过，0 error |
-| 单元/集成测试 | `pytest -q` | **97 passed** |
-| 核心覆盖率 | `pytest --cov=Moge.core --cov-report=term-missing` | **90%**（阈值 80%） |
+| 单元/集成测试 | `pytest -q` | **117 passed** |
+| 核心覆盖率 | `pytest --cov=Moge.core --cov-report=term-missing` | **83%**（阈值 80%） |
 | 基准测试 | `python tools/run_benchmarks.py` | 420 条量化记录、35 条预设、14 条材料对照 |
 | GUI 启动 | `.venv\Scripts\python.exe main.py` | 进程存活，日志写入 `%LOCALAPPDATA%\Moge\logs\app.log` |
 | GUI 截图 | 主屏截图 | `.screenshots/moge2-main.png`（第一轮）、`.screenshots/moge2-round2-100/125/150.png` |
-| 打包 | `pyinstaller --noconfirm Moge.spec` | 成功，**239.2 MB / 218 文件** |
+| 打包 | `pyinstaller --noconfirm Moge.spec` | 成功，**241.2 MB / 220 文件** |
 | 打包启动 | 运行 `dist/Moge/Moge.exe` | 存活 7 秒，日志确认主窗口初始化 |
 
 ## 2. 功能验收矩阵
@@ -32,8 +32,9 @@
 | 透明 PNG 输入 | 部分 | 采样前白底合成并记录透明像素数；仅像素化编辑可用 `-1` 透明单元 |
 | Minecraft 版本/类别/获取条件/成本筛选 | 通过 | 版本过滤、类别交集、可再生、成本上限均有测试 |
 | Minecraft 合法性 | 通过 | 映射结果 100% 属于候选集 |
-| Minecraft 真实贴图 | 未完成 | 仅支持资源包 ZIP 的方块贴图平均色；无多面/染色/模型 |
-| Java/Bedrock 差异 | 未完成 | 内置库两版本共用元数据，未验证基岩资源结构 |
+| Minecraft 真实贴图 | 通过（官方资源） | Java 1.12.2/1.16.5/1.18.2/1.20.1/1.21.4，Bedrock 1.20.80/1.21.50；详细数据见资源报告 |
+| Minecraft 资源获取 | 通过 | CLI 与 GUI 共用资源核心；下载/校验/解析/取消/校验/删除/重建已测试 |
+| Java/Bedrock 差异 | 部分 | 真实资源分别按 Java JAR / Bedrock 样例解析；获取条件仍共用内置近似元数据 |
 | 拼豆品牌/系列/库存/禁用筛选 | 通过 | 单品牌/系列匹配，色号隔离有测试 |
 | 拼豆官方色卡 | 未完成 | 内置为未验证近似色；用户 CSV/库存导入可用 |
 | 拼豆采购数量 | 通过 | 每包数量可配置，`packs_required` 与 CSV `packs` 一致 |

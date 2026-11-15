@@ -24,6 +24,13 @@ core/
   pipeline.py               注册式阶段管线、进度与取消
   materials.py              Minecraft 方块近似库、拼豆色卡、资源包/CSV 导入
   benchmarks.py             合成基准图、指标、算法/预设/材料对照
+  resources/                Minecraft 官方资源获取、解析、SQLite 索引与 CLI
+    network.py              清单缓存、断点续传、哈希校验、取消
+    safezip.py              ZIP/JAR 路径穿越与体积校验
+    java.py                 Java blockstate → model → texture
+    bedrock.py              Bedrock terrain_texture / blocks.json
+    database.py             versions/textures/blocks/faces SQLite
+    manager.py              CLI/GUI 共用资源管理入口
   modes/
     pixel.py                普通像素化配置、效果预设与透明自动规则
     minecraft.py            版本/类别/获取条件筛选、材料映射
