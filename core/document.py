@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 
-from Moge.core.models import GridSpec, PixelGrid, RenderResult
+from Moge.core.models import GridSpec, RenderResult
 from Moge.core.render import render_document
 
 
@@ -23,7 +23,6 @@ class GridDocument:
     locked: Optional[np.ndarray] = None
     selection: Optional[tuple[int, int, int, int]] = None
     max_history: int = 50
-    dirty: bool = False
     _history: list = field(default_factory=list, repr=False)
     _redo: list = field(default_factory=list, repr=False)
 
@@ -52,15 +51,6 @@ class GridDocument:
             materials=list(result.grid.materials),
         )
 
-    def to_pixel_grid(self) -> PixelGrid:
-        return PixelGrid(
-            spec=self.spec,
-            labels=self.labels,
-            entries=list(self.entries),
-            mode=self.mode,
-            materials=list(self.materials),
-        )
-
     # ---------- 编辑历史 ---------- #
     @property
     def can_undo(self) -> bool:
@@ -76,14 +66,12 @@ class GridDocument:
         if len(self._history) > self.max_history:
             self._history.pop(0)
         self._redo.clear()
-        self.dirty = True
 
     def undo(self) -> bool:
         if not self._history:
             return False
         self._redo.append(self.labels.copy())
         self.labels = self._history.pop()
-        self.dirty = True
         return True
 
     def redo(self) -> bool:
@@ -91,12 +79,7 @@ class GridDocument:
             return False
         self._history.append(self.labels.copy())
         self.labels = self._redo.pop()
-        self.dirty = True
         return True
-
-    def clear_history(self):
-        self._history.clear()
-        self._redo.clear()
 
     # ---------- 区域锁定 ---------- #
     def is_locked(self, col: int, row: int) -> bool:

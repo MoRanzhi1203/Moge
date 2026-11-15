@@ -45,8 +45,14 @@
 ### 兼容性
 
 - `main.py`、`moge`、`Moge.spec` 入口保持。
-- 旧 `ProcessingParams`/`PixelMethod`/`image_processor` 函数签名不变，旧测试继续通过。
+- 旧 `ProcessingParams`/`PixelMethod`/`image_processor` 处理函数已移除；`ResizeMode`/`ProcessingCancelled` 合并到 `core/models.py`，统一走 `PipelineWorker`。
 - 新增包：`Moge.core.modes`、`Moge.exporters`，已加入 `pyproject.toml` 打包配置。
+
+### 代码精简（2026-11-15）
+
+- 删除 `core/image_processor.py`、`ProcessingWorker` 与对应旧测试。
+- 清理未使用的函数、常量、模型方法、画布接口与重复测试等待逻辑。
+- 删除构建产物、缓存、覆盖率文件及旧版贴图下载缓存（约 1.2 GB）。
 
 ### 提交
 

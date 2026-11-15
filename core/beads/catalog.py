@@ -45,14 +45,6 @@ def load_catalog_with_meta(path: Path = None) -> tuple[list[BeadColor], dict]:
         return database.load_catalog(), database.metadata()
 
 
-def catalog_brands(catalog: list[BeadColor]) -> list[str]:
-    return sorted({item.brand for item in catalog})
-
-
-def catalog_series(catalog: list[BeadColor], brand: str) -> list[str]:
-    return sorted({item.series for item in catalog if item.brand == brand})
-
-
 def available_sizes(catalog: list[BeadColor], brand: str = "", series: str = "") -> list[str]:
     return sorted(
         {

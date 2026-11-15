@@ -100,25 +100,8 @@ def test_frozen_bundle_resource_root(monkeypatch, tmp_path):
     assert assets_root() == bundle / "assets"
 
 
-def _wait(window, timeout=30000):
-    from PyQt5.QtCore import QEventLoop, QTimer
-
-    loop = QEventLoop()
-
-    def poll():
-        if window._thread is None:
-            loop.quit()
-        else:
-            QTimer.singleShot(30, poll)
-
-    QTimer.singleShot(30, poll)
-    QTimer.singleShot(timeout, loop.quit)
-    loop.exec_()
-    assert window._thread is None
-
-
 @pytest.mark.skipif(not HAS_SAMPLES, reason="示例图库尚未生成")
-def test_gui_welcome_dialog_and_three_modes(qapp, monkeypatch):
+def test_gui_welcome_dialog_and_three_modes(qapp, monkeypatch, wait_pipeline):
     from Moge.ui.main_window import MainWindow
     from Moge.ui.sample_dialog import SampleLibraryDialog
     from PyQt5.QtWidgets import QMessageBox
@@ -156,7 +139,7 @@ def test_gui_welcome_dialog_and_three_modes(qapp, monkeypatch):
     for mode in ("pixel", "minecraft", "beads"):
         window.mode_combo.setCurrentIndex(window.mode_combo.findData(mode))
         window.apply_processing()
-        _wait(window)
+        wait_pipeline(window)
         result = window.results[mode]
         assert result.mode == mode
         assert result.grid.spec.width == 16 and result.grid.spec.height == 12

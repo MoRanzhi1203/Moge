@@ -9,13 +9,12 @@ from typing import Callable, Optional
 import numpy as np
 
 from Moge.core.grid import ensure_rgb, isolated_cells, render_grid, sample_grid
-from Moge.core.image_processor import ProcessingCancelled
 from Moge.core.models import (
-    GridSpec,
     MaterialRef,
     PaletteEntry,
     PipelineConfig,
     PixelGrid,
+    ProcessingCancelled,
     RenderResult,
 )
 
@@ -244,11 +243,3 @@ def run_pipeline(
         source_size=(image_rgb.shape[1], image_rgb.shape[0]),
         settings=settings,
     )
-
-
-def available_stages() -> list[str]:
-    return sorted(STAGES.keys())
-
-
-def build_grid_spec(width: int, height: int) -> GridSpec:
-    return GridSpec(width=int(width), height=int(height))

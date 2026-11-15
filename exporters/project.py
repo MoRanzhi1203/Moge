@@ -2,7 +2,6 @@
 # exporters/project.py - .moge 工程文件读写
 ##############################
 
-import io
 import json
 import zipfile
 from pathlib import Path
@@ -141,16 +140,3 @@ def load_project(path: str) -> ProjectDocument:
         source_path=str(manifest.get("source_path") or "") or None,
         created_at=str(manifest.get("created_at", "")),
     )
-
-
-def thumbnail_bytes(result: RenderResult) -> bytes:
-    """ 生成内存中的缩略图 PNG，供 UI 预览复用 """
-    thumbnail = upscale_grid(result.image, 4)
-    if thumbnail.shape[2] == 4:
-        thumbnail = cv2.cvtColor(thumbnail, cv2.COLOR_RGBA2BGRA)
-    else:
-        thumbnail = cv2.cvtColor(thumbnail, cv2.COLOR_RGB2BGR)
-    ok, encoded = cv2.imencode(".png", thumbnail)
-    if not ok:
-        raise OSError("缩略图编码失败")
-    return io.BytesIO(encoded.tobytes()).getvalue()

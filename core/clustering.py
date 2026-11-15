@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from Moge.core.color_spaces import lab_to_rgb, srgb_to_lab
-from Moge.core.image_processor import ProcessingCancelled
+from Moge.core.models import ProcessingCancelled
 
 
 @dataclass
@@ -266,11 +266,3 @@ def quantize(
         "spectral_fallback": float(fallback),
     }
     return ClusterOutput(centers_rgb=centers_rgb, labels=labels, diagnostics=diagnostics)
-
-
-def algorithm_labels() -> list[str]:
-    return [info.label for info in ALGORITHM_INFO.values()]
-
-
-def algorithm_keys() -> list[str]:
-    return list(ALGORITHM_INFO.keys())

@@ -87,7 +87,7 @@ class BeadPaletteDatabase:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, *_exc_info):
         self.close()
 
     # ---------- 写入 ---------- #
@@ -158,9 +158,6 @@ class BeadPaletteDatabase:
     # ---------- 查询 ---------- #
     def color_count(self) -> int:
         return int(self.connection.execute("SELECT COUNT(*) AS n FROM colors").fetchone()["n"])
-
-    def palette_count(self) -> int:
-        return int(self.connection.execute("SELECT COUNT(*) AS n FROM palettes").fetchone()["n"])
 
     def palette_rows(self) -> list[dict]:
         rows = self.connection.execute(

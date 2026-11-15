@@ -2,9 +2,6 @@
 # core/modes/beads.py - 拼豆图纸模式
 ##############################
 
-from collections.abc import Sequence
-from typing import Optional
-
 import numpy as np
 
 from Moge.core.color_spaces import delta_e_00, nearest_lab_index, srgb_to_lab
@@ -12,8 +9,6 @@ from Moge.core.materials import (
     BEAD_CATALOG,
     BeadColor,
     board_partitions,
-    catalog_brands,
-    catalog_series,
     filter_beads,
 )
 from Moge.core.models import GridSpec, MaterialRef, PaletteEntry, PipelineConfig
@@ -66,13 +61,6 @@ def build_config(spec: GridSpec, settings: dict[str, object]) -> PipelineConfig:
         preset="material",
         params=resolved,
     )
-
-
-def catalog_options(catalog: Optional[Sequence[BeadColor]] = None):
-    items = list(catalog) if catalog else _catalog({})
-    brands = catalog_brands(items)
-    series = catalog_series(items, brands[0]) if brands else []
-    return brands, series
 
 
 def selectable_beads(settings: dict[str, object]) -> list[BeadColor]:

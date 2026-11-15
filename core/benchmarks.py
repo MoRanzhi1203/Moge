@@ -19,8 +19,6 @@ from Moge.core.materials import BEAD_CATALOG, filter_beads, filter_blocks
 from Moge.core.models import GridSpec, PipelineConfig
 from Moge.core.pipeline import run_pipeline
 
-BENCHMARK_IMAGES = ("portrait", "noise", "cartoon", "low_contrast", "gradient", "text", "transparent")
-
 
 def _canvas(size: int = 128) -> np.ndarray:
     return np.full((size, size, 3), 235, dtype=np.uint8)

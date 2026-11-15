@@ -31,3 +31,25 @@ def qapp():
     if app is None:
         app = QApplication([])
     return app
+
+
+@pytest.fixture
+def wait_pipeline():
+    """ 等待 MainWindow 后台管线结束，供多个 GUI 测试复用 """
+    from PyQt5.QtCore import QEventLoop, QTimer
+
+    def wait(window, timeout=30000):
+        loop = QEventLoop()
+
+        def poll():
+            if window._thread is None:
+                loop.quit()
+            else:
+                QTimer.singleShot(30, poll)
+
+        QTimer.singleShot(30, poll)
+        QTimer.singleShot(timeout, loop.quit)
+        loop.exec_()
+        assert window._thread is None
+
+    return wait

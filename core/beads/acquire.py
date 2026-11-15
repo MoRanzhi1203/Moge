@@ -81,9 +81,6 @@ QUALITY_TRUST = {
     "third_party_public_repository": "community",
 }
 
-TRUST_ORDER = {"official": 3, "sampled": 2, "community": 1, "unknown": 0}
-
-
 def _fetch(url: str, cache_file: Path, force: bool = False) -> str:
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     if cache_file.is_file() and not force and time.time() - cache_file.stat().st_mtime <= CACHE_MAX_AGE:

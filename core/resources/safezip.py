@@ -62,9 +62,3 @@ def extract(archive_path: Path, destination: Path, allowed_prefixes: Optional[It
                     output.write(chunk)
             written.append(target)
     return written
-
-
-def read_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
-    if info.file_size > MAX_MEMBER_BYTES:
-        raise UnsafeArchiveError(f"成员过大：{info.filename}")
-    return archive.read(info)

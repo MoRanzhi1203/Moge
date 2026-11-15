@@ -11,25 +11,17 @@ from typing import Any, Optional
 
 import numpy as np
 
-from Moge.core.image_processor import ResizeMode
+
+class ResizeMode(Enum):
+    """ 按旧版像素块大小推导网格时的取整方式 """
+
+    CEIL = '向上取整'
+    FLOOR = '向下取整'
+    ROUND = '四舍五入'
 
 
-class PixelMethod(Enum):
-    """ 像素化计算方法（旧接口） """
-
-    MEAN = '平均值'
-    MODE = '频数值'
-
-
-@dataclass(frozen=True)
-class ProcessingParams:
-    """ 旧版一次图像处理所需的全部参数（保持兼容） """
-
-    block_size: int
-    resize_mode: ResizeMode
-    pixel_method: PixelMethod
-    n_clusters: int
-    seed: int
+class ProcessingCancelled(Exception):
+    """ 用户取消处理时抛出，用于中断计算流程 """
 
 
 RGB = tuple[int, int, int]
@@ -45,10 +37,6 @@ class GridSpec:
     def __post_init__(self):
         if self.width < 1 or self.height < 1:
             raise ValueError("网格宽高必须大于 0")
-
-    @property
-    def cells(self) -> int:
-        return self.width * self.height
 
     @classmethod
     def from_block_size(cls, image_shape: Sequence[int], block_size: int, mode: ResizeMode = ResizeMode.FLOOR) -> "GridSpec":
@@ -99,15 +87,6 @@ class MaterialRef:
     verified: bool = False
     meta: dict[str, Any] = field(default_factory=dict, compare=False, hash=False)
 
-    def to_palette_entry(self) -> PaletteEntry:
-        return PaletteEntry(
-            id=self.id,
-            name=self.name,
-            rgb=self.rgb,
-            source=self.source,
-            meta=dict(self.meta, kind=self.kind, category=self.category, verified=self.verified),
-        )
-
 
 @dataclass
 class PixelGrid:
@@ -126,15 +105,6 @@ class PixelGrid:
             )
         if self.labels.size and self.labels.max() >= len(self.entries):
             raise ValueError("labels 中存在越界的颜色/材料索引")
-
-    def copy(self) -> "PixelGrid":
-        return PixelGrid(
-            spec=self.spec,
-            labels=self.labels.copy(),
-            entries=list(self.entries),
-            mode=self.mode,
-            materials=list(self.materials),
-        )
 
     def counts(self) -> dict[str, int]:
         """ 各颜色/材料的单元数量（忽略透明单元） """
@@ -188,10 +158,6 @@ class RenderResult:
     settings: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
-    @property
-    def palette(self) -> list[PaletteEntry]:
-        return list(self.grid.entries)
-
 
 @dataclass
 class ProjectDocument:
@@ -204,12 +170,3 @@ class ProjectDocument:
     settings: dict[str, Any] = field(default_factory=dict)
     source_path: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
-
-
-@dataclass(frozen=True)
-class ExportJob:
-    """ 导出任务描述 """
-
-    kind: str
-    path: str
-    options: dict[str, Any] = field(default_factory=dict)

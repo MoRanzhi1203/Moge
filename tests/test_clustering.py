@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from Moge.core.clustering import ALGORITHM_INFO, quantize
-from Moge.core.image_processor import ProcessingCancelled
+from Moge.core.models import ProcessingCancelled
 
 
 @pytest.mark.parametrize("algorithm", list(ALGORITHM_INFO.keys()))

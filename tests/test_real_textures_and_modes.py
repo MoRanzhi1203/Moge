@@ -172,25 +172,8 @@ def test_canvas_view_mode_never_edits(qapp):
     canvas.close()
 
 
-def _wait(window, timeout=20000):
-    from PyQt5.QtCore import QEventLoop, QTimer
-
-    loop = QEventLoop()
-
-    def poll():
-        if window._thread is None:
-            loop.quit()
-        else:
-            QTimer.singleShot(30, poll)
-
-    QTimer.singleShot(30, poll)
-    QTimer.singleShot(timeout, loop.quit)
-    loop.exec_()
-    assert window._thread is None
-
-
 @pytest.mark.skipif(not HAS_REAL_RESOURCES, reason="本机没有真实资源索引库")
-def test_gui_preview_switch_does_not_change_stats(qapp, monkeypatch):
+def test_gui_preview_switch_does_not_change_stats(qapp, monkeypatch, wait_pipeline):
     from Moge.ui.main_window import MainWindow
     from PyQt5.QtWidgets import QMessageBox
 
@@ -205,7 +188,7 @@ def test_gui_preview_switch_does_not_change_stats(qapp, monkeypatch):
     window.grid_height.setValue(9)
     window.mode_combo.setCurrentIndex(window.mode_combo.findData("minecraft"))
     window.apply_processing()
-    _wait(window)
+    wait_pipeline(window)
 
     result = window.results["minecraft"]
     assert result.stats["resource_source"] == "mojang-resource"
@@ -227,7 +210,7 @@ def test_gui_preview_switch_does_not_change_stats(qapp, monkeypatch):
 
 
 @pytest.mark.skipif(not HAS_REAL_RESOURCES, reason="本机没有真实资源索引库")
-def test_gui_edit_lock_and_project_roundtrip(qapp, tmp_path, monkeypatch):
+def test_gui_edit_lock_and_project_roundtrip(qapp, tmp_path, monkeypatch, wait_pipeline):
     from Moge.exporters.project import load_project, save_project
     from Moge.ui.main_window import MainWindow
     from PyQt5.QtWidgets import QMessageBox
@@ -243,7 +226,7 @@ def test_gui_edit_lock_and_project_roundtrip(qapp, tmp_path, monkeypatch):
     window.grid_height.setValue(6)
     window.mode_combo.setCurrentIndex(window.mode_combo.findData("pixel"))
     window.apply_processing()
-    _wait(window)
+    wait_pipeline(window)
 
     window.act_edit_mode.trigger()
     result = window.results["pixel"]

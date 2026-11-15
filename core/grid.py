@@ -5,7 +5,7 @@
 import cv2
 import numpy as np
 
-from Moge.core.models import GridSpec, PixelGrid
+from Moge.core.models import GridSpec
 
 
 def ensure_rgb(image: np.ndarray) -> tuple:
@@ -98,26 +98,6 @@ def upscale_grid(image: np.ndarray, cell_size: int) -> np.ndarray:
     if cell_size < 1:
         raise ValueError("单元格尺寸必须大于 0")
     return np.repeat(np.repeat(image, cell_size, axis=0), cell_size, axis=1)
-
-
-def build_pixel_grid(
-    labels: np.ndarray,
-    entries: list,
-    spec: GridSpec,
-    mode: str,
-    materials: list = None,
-) -> PixelGrid:
-    """ 构造并校验逻辑网格 """
-    grid = PixelGrid(
-        spec=spec,
-        labels=np.asarray(labels, dtype=np.int32),
-        entries=list(entries),
-        mode=mode,
-        materials=list(materials or []),
-    )
-    if not grid.validate():
-        raise ValueError("网格数据不合法")
-    return grid
 
 
 def isolated_cells(labels: np.ndarray) -> int:

@@ -1,25 +1,9 @@
 import numpy as np
 from Moge.ui.main_window import MainWindow
-from PyQt5.QtCore import QEventLoop, QTimer
 from PyQt5.QtWidgets import QMessageBox
 
 
-def _wait(window, timeout=15000):
-    loop = QEventLoop()
-
-    def poll():
-        if window._thread is None:
-            loop.quit()
-        else:
-            QTimer.singleShot(30, poll)
-
-    QTimer.singleShot(30, poll)
-    QTimer.singleShot(timeout, loop.quit)
-    loop.exec_()
-    assert window._thread is None
-
-
-def test_workbench_three_modes_edit_and_switch(qapp, monkeypatch):
+def test_workbench_three_modes_edit_and_switch(qapp, monkeypatch, wait_pipeline):
     monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *args, **kwargs: None))
     monkeypatch.setattr(QMessageBox, "critical", staticmethod(lambda *args, **kwargs: None))
 
@@ -32,7 +16,7 @@ def test_workbench_three_modes_edit_and_switch(qapp, monkeypatch):
     for mode in ("pixel", "minecraft", "beads"):
         window.mode_combo.setCurrentIndex(window.mode_combo.findData(mode))
         window.apply_processing()
-        _wait(window)
+        wait_pipeline(window)
         result = window.results[mode]
         assert result is not None
         assert result.grid.validate()

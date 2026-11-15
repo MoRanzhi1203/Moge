@@ -110,18 +110,12 @@ class GridCanvas(QWidget):
             qimage = QImage(array.data, width, height, array.strides[0], QImage.Format_RGB888)
         return qimage.copy()
 
-    def grid_shape(self) -> tuple[int, int]:
-        return self._grid
-
     def set_editable(self, editable: bool):
         self._editable = editable
 
     def set_grid_visible(self, visible: bool):
         self._show_grid = bool(visible)
         self.update()
-
-    def grid_visible(self) -> bool:
-        return self._show_grid
 
     # ---------- 查看/编辑 ---------- #
     def set_interaction_mode(self, mode: str):
@@ -173,20 +167,6 @@ class GridCanvas(QWidget):
         self._pan = QPoint(int(center_x - cell_x), int(center_y - cell_y))
         self.update()
         self.zoomChanged.emit(self._display_scale())
-
-    def reset_zoom(self):
-        self._fit = False
-        self._zoom = 1.0
-        self._pan = QPoint(0, 0)
-        self.update()
-        self.zoomChanged.emit(self._zoom)
-
-    def set_zoom(self, zoom: float):
-        self._fit = False
-        self._zoom = max(0.2, min(64.0, float(zoom)))
-        self._set_zoom_badge(self._zoom)
-        self.update()
-        self.zoomChanged.emit(self._zoom)
 
     def zoom(self) -> float:
         return self._display_scale()

@@ -46,7 +46,6 @@ MATCHING_OPTIONS = (
     ("balanced", "均衡优化（实验）"),
 )
 
-VERSION_OPTIONS = tuple((version, version) for version in MC_VERSIONS)
 OBTAINABILITY_OPTIONS = (
     ("any", "不限制"),
     ("survival", "生存可获取"),

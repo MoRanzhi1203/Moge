@@ -19,16 +19,6 @@ from Moge.core.resources.paths import (
 
 JAVA_TARGETS = ("1.12.2", "1.16.5", "1.18.2", "1.20.1", "1.21.4")
 
-RESOURCE_STATES = (
-    "UNAVAILABLE",
-    "DOWNLOADING",
-    "VERIFYING",
-    "PARSING",
-    "PARTIAL",
-    "READY",
-    "CORRUPTED",
-)
-
 _STATUS_MAP = {
     "not-downloaded": "UNAVAILABLE",
     "not-available": "UNAVAILABLE",
@@ -68,7 +58,7 @@ class ResourceManager:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, *_exc_info):
         self.close()
 
     # ---------- Java ---------- #

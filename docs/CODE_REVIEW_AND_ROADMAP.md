@@ -4,6 +4,8 @@
 > 审查日期：2026-11-14
 > 审查方式：全量源码静态审查 + 关键路径实测基准 + 依赖/打包/Git 度量
 > 实测环境：Windows，conda env `pyqt`，Python 3.9.21，NumPy 2.0.2，OpenCV 4.11.0，scikit-learn 1.6.1，PyQt5 5.15.9
+>
+> 说明：本文是早期审查记录。其中的 `core/image_processor.py`、`ProcessingParams`、`ProcessingWorker` 等旧接口已在 2026-11-15 的代码精简中移除；当前结构见 [Moge-2.0-Architecture.md](Moge-2.0-Architecture.md)。
 
 ---
 

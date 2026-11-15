@@ -1681,31 +1681,57 @@ class MainWindow(QMainWindow):
         self._palette_building = True
         self.palette_list.blockSignals(True)
         self.palette_list.clear()
-        result = self._current_result()
-        show_counts = result is not None
-        if result is not None:
-            entries = result.grid.entries
-            counts = result.stats.get("counts", {})
-            used_only = self.palette_used_only.isChecked()
-            mode = result.mode
-        elif self.mode == "beads":
-            entries = self._bead_catalog_entries()
-            counts = {}
-            used_only = False
-            mode = "beads"
-            if self.palette_used_only.isChecked():
-                self.palette_used_only.blockSignals(True)
-                self.palette_used_only.setChecked(False)
-                self.palette_used_only.blockSignals(False)
-                self._sync_palette_scope()
-        else:
+        source = self._palette_source()
+        if source is None:
             self.palette_list.blockSignals(False)
             self._palette_building = False
             return
+        entries, counts, used_only, mode = source
+        show_counts = self._current_result() is not None
+        rows = self._palette_rows(entries, counts, used_only)
+        for index, entry, count, _hue in rows:
+            item = QListWidgetItem(
+                self._palette_icon(entry),
+                self._palette_label(entry, mode, count, show_counts),
+            )
+            item.setData(Qt.UserRole, index)
+            item.setToolTip(
+                f"{entry.name}\n{entry.id}" + (f"\n用量 {count}" if show_counts else "\n示例色卡（未处理）")
+            )
+            self.palette_list.addItem(item)
 
+        visible_indices = [row[0] for row in rows]
+        if visible_indices:
+            if self.selected_entry not in visible_indices:
+                self.selected_entry = visible_indices[0]
+            target_row = visible_indices.index(self.selected_entry)
+            self.palette_list.setCurrentRow(target_row)
+        self.palette_list.blockSignals(False)
+        self._palette_building = False
+
+    def _palette_source(self):
+        """ 返回 (entries, counts, used_only, mode)；没有可展示数据时返回 None """
+        result = self._current_result()
+        if result is not None:
+            return (
+                result.grid.entries,
+                result.stats.get("counts", {}),
+                self.palette_used_only.isChecked(),
+                result.mode,
+            )
+        if self.mode != "beads":
+            return None
+        if self.palette_used_only.isChecked():
+            self.palette_used_only.blockSignals(True)
+            self.palette_used_only.setChecked(False)
+            self.palette_used_only.blockSignals(False)
+            self._sync_palette_scope()
+        return self._bead_catalog_entries(), {}, False, "beads"
+
+    def _palette_rows(self, entries, counts, used_only):
+        """ 过滤并排序调色板行：(原始下标, 条目, 用量, 色相) """
         query = self.palette_search.text().strip().lower()
         sort_key = self.palette_sort.currentData()
-
         rows = []
         for index, entry in enumerate(entries):
             count = int(counts.get(entry.id, 0))
@@ -1724,52 +1750,43 @@ class MainWindow(QMainWindow):
             rows.sort(key=lambda row: (row[3], row[1].name))
         else:
             rows.sort(key=lambda row: (-row[2], row[1].name))
+        return rows
 
-        for index, entry, count, _hue in rows:
-            key = tuple(entry.rgb)
-            icon = self._icon_cache.get(key)
-            if icon is None:
-                pixmap = QPixmap(16, 16)
-                pixmap.fill(QColor(*key))
-                icon = QIcon(pixmap)
-                if len(self._icon_cache) >= 512:
-                    self._icon_cache.clear()
-                self._icon_cache[key] = icon
-            label = entry.name
-            if mode == "minecraft":
-                texture = entry.meta.get("texture")
-                if texture == "real":
-                    label += " [真实]"
-                elif texture == "user-average":
-                    label += " [贴图]"
-                else:
-                    label += " [近似]"
-            elif mode == "beads":
-                meta = entry.meta
-                badges = []
-                if meta.get("material") and meta.get("material") != "solid":
-                    badges.append(material_label(str(meta.get("material"))))
-                if meta.get("trust"):
-                    badges.append(trust_label(str(meta.get("trust"))))
-                label = f"{meta.get('code', '')} {entry.name}"
-                if badges:
-                    label += " [" + "/".join(badges) + "]"
-            suffix = f"  ×{count}" if show_counts else ""
-            item = QListWidgetItem(icon, f"{label}{suffix}")
-            item.setData(Qt.UserRole, index)
-            item.setToolTip(
-                f"{entry.name}\n{entry.id}" + (f"\n用量 {count}" if show_counts else "\n示例色卡（未处理）")
-            )
-            self.palette_list.addItem(item)
+    def _palette_icon(self, entry) -> QIcon:
+        """ 复用颜色图标，避免滚动/刷新时重复创建 QPixmap """
+        key = tuple(entry.rgb)
+        icon = self._icon_cache.get(key)
+        if icon is None:
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(QColor(*key))
+            icon = QIcon(pixmap)
+            if len(self._icon_cache) >= 512:
+                self._icon_cache.clear()
+            self._icon_cache[key] = icon
+        return icon
 
-        visible_indices = [row[0] for row in rows]
-        if visible_indices:
-            if self.selected_entry not in visible_indices:
-                self.selected_entry = visible_indices[0]
-            target_row = visible_indices.index(self.selected_entry)
-            self.palette_list.setCurrentRow(target_row)
-        self.palette_list.blockSignals(False)
-        self._palette_building = False
+    @staticmethod
+    def _palette_label(entry, mode: str, count: int, show_counts: bool) -> str:
+        label = entry.name
+        if mode == "minecraft":
+            texture = entry.meta.get("texture")
+            if texture == "real":
+                label += " [真实]"
+            elif texture == "user-average":
+                label += " [贴图]"
+            else:
+                label += " [近似]"
+        elif mode == "beads":
+            meta = entry.meta
+            badges = []
+            if meta.get("material") and meta.get("material") != "solid":
+                badges.append(material_label(str(meta.get("material"))))
+            if meta.get("trust"):
+                badges.append(trust_label(str(meta.get("trust"))))
+            label = f"{meta.get('code', '')} {entry.name}"
+            if badges:
+                label += " [" + "/".join(badges) + "]"
+        return f"{label}  ×{count}" if show_counts else label
 
     def _on_palette_selected(self, row):
         if row >= 0 and not self._palette_building:
@@ -1973,27 +1990,7 @@ class MainWindow(QMainWindow):
         height, width = labels.shape
         if not (0 <= col < width and 0 <= row < height):
             return
-
-        if self.tool == "pick":
-            value = int(labels[row, col])
-            if value >= 0:
-                self.selected_entry = value
-                self.palette_list.setCurrentRow(value)
-            return
-
-        if self.tool == "lock":
-            locked = document.toggle_lock(col, row)
-            self.canvas.set_locked_mask(document.locked)
-            self.lbl_status.setText(f"已{'锁定' if locked else '解锁'} ({col}, {row})")
-            return
-
-        if self.tool == "select":
-            if self.selection_anchor is None:
-                self.selection_anchor = (col, row)
-            document.set_selection(self.selection_anchor, (col, row))
-            self.canvas.set_selection(document.selection)
-            x0, y0, x1, y1 = document.selection
-            self.lbl_status.setText(f"选区 ({x0}, {y0}) - ({x1}, {y1})")
+        if self._handle_pointer_tool(document, labels, col, row):
             return
 
         if document.is_locked(col, row):
@@ -2006,39 +2003,77 @@ class MainWindow(QMainWindow):
 
         new_value = -1 if self.tool == "erase" else int(self.selected_entry)
         if self.tool == "fill":
-            target = int(labels[row, col])
-            if target == new_value:
-                return
-            self._ensure_undo()
-            queue = deque([(row, col)])
-            visited = set()
-            while queue:
-                current_row, current_col = queue.popleft()
-                if (current_row, current_col) in visited:
-                    continue
-                visited.add((current_row, current_col))
-                if document.locked[current_row, current_col]:
-                    continue
-                if int(labels[current_row, current_col]) != target:
-                    continue
-                labels[current_row, current_col] = new_value
-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nr, nc = current_row + dr, current_col + dc
-                    if 0 <= nr < height and 0 <= nc < width and (nr, nc) not in visited:
-                        queue.append((nr, nc))
+            changed = self._bucket_fill(document, row, col, new_value)
         elif self.tool == "replace":
-            target = int(labels[row, col])
-            if target < 0 or target == new_value:
-                return
-            self._ensure_undo()
-            labels[(labels == target) & ~document.locked] = new_value
+            changed = self._replace_same(document, row, col, new_value)
+        elif int(labels[row, col]) == new_value:
+            changed = False
         else:
-            if int(labels[row, col]) == new_value:
-                return
             self._ensure_undo()
             labels[row, col] = new_value
+            changed = True
 
-        self._refresh_after_edit()
+        if changed:
+            self._refresh_after_edit()
+
+    def _handle_pointer_tool(self, document, labels, col: int, row: int) -> bool:
+        """ 处理不修改像素的取色/锁定/选区工具，返回是否已消费本次操作 """
+        if self.tool == "pick":
+            value = int(labels[row, col])
+            if value >= 0:
+                self.selected_entry = value
+                self.palette_list.setCurrentRow(value)
+            return True
+        if self.tool == "lock":
+            locked = document.toggle_lock(col, row)
+            self.canvas.set_locked_mask(document.locked)
+            self.lbl_status.setText(f"已{'锁定' if locked else '解锁'} ({col}, {row})")
+            return True
+        if self.tool == "select":
+            if self.selection_anchor is None:
+                self.selection_anchor = (col, row)
+            document.set_selection(self.selection_anchor, (col, row))
+            self.canvas.set_selection(document.selection)
+            x0, y0, x1, y1 = document.selection
+            self.lbl_status.setText(f"选区 ({x0}, {y0}) - ({x1}, {y1})")
+            return True
+        return False
+
+    def _bucket_fill(self, document, row: int, col: int, new_value: int) -> bool:
+        """ 用四邻域洪水填充替换同色区域，返回是否发生修改 """
+        labels = document.labels
+        height, width = labels.shape
+        target = int(labels[row, col])
+        if target == new_value:
+            return False
+        self._ensure_undo()
+        queue = deque([(row, col)])
+        visited = set()
+        while queue:
+            current_row, current_col = queue.popleft()
+            if (current_row, current_col) in visited:
+                continue
+            visited.add((current_row, current_col))
+            if document.locked[current_row, current_col]:
+                continue
+            if int(labels[current_row, current_col]) != target:
+                continue
+            labels[current_row, current_col] = new_value
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = current_row + dr, current_col + dc
+                if 0 <= nr < height and 0 <= nc < width and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+        return True
+
+    def _replace_same(self, document, row: int, col: int, new_value: int) -> bool:
+        """ 替换整张网格中的同类色，跳过锁定单元 """
+        labels = document.labels
+        target = int(labels[row, col])
+        if target < 0 or target == new_value:
+            return False
+        self._ensure_undo()
+        labels[(labels == target) & ~document.locked] = new_value
+        return True
 
     def _refresh_after_edit(self, immediate: bool = False):
         result = self._current_result()
@@ -2050,16 +2085,15 @@ class MainWindow(QMainWindow):
         result.image = render_grid(labels, document.entries, transparent=(result.mode == "pixel"))
         flat = labels.reshape(-1)
         valid = flat[flat >= 0]
-        values, counts = np.unique(valid, return_counts=True) if valid.size else (np.array([]), np.array([]))
-        result.stats["counts"] = {
-            document.entries[int(value)].id: int(count) for value, count in zip(values, counts)
-        }
+        counts = result.grid.counts()
+        used_entries = len(counts)
+        result.stats["counts"] = counts
         result.stats["filled_cells"] = int(valid.size)
         result.stats["empty_cells"] = int(flat.size - valid.size)
-        result.stats["used_entries"] = int(len(values))
+        result.stats["used_entries"] = used_entries
         result.stats["isolated_cells"] = isolated_cells(labels)
         if result.mode == "minecraft":
-            result.stats["block_types"] = int(len(values))
+            result.stats["block_types"] = used_entries
         if result.mode == "beads":
             settings = self.mode_settings.get("beads", {})
             boards = board_partitions(
@@ -2083,11 +2117,11 @@ class MainWindow(QMainWindow):
                 )
             result.stats["board_stats"] = board_stats
             result.stats["total_beads"] = int(valid.size)
-            result.stats["used_colors"] = int(len(values))
+            result.stats["used_colors"] = used_entries
             pack_size = max(1, int(settings.get("pack_size", 1000)))
             result.stats["pack_size"] = pack_size
             result.stats["packs_required"] = sum(
-                (int(count) + pack_size - 1) // pack_size for count in counts
+                (count + pack_size - 1) // pack_size for count in counts.values()
             )
         self.canvas.set_image(
             document.render(self.preview_style),

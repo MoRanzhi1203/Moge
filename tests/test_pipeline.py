@@ -1,7 +1,6 @@
 import numpy as np
 import pytest
-from Moge.core.image_processor import ProcessingCancelled
-from Moge.core.models import GridSpec
+from Moge.core.models import GridSpec, ProcessingCancelled
 from Moge.core.modes import registry
 from Moge.core.pipeline import run_pipeline
 

@@ -130,25 +130,8 @@ def test_pipeline_materials_belong_to_target_version(monkeypatch):
         assert hashlib.sha256(path.read_bytes()).hexdigest() == entry.meta["texture_sha256"]
 
 
-def _wait(window, timeout=20000):
-    from PyQt5.QtCore import QEventLoop, QTimer
-
-    loop = QEventLoop()
-
-    def poll():
-        if window._thread is None:
-            loop.quit()
-        else:
-            QTimer.singleShot(30, poll)
-
-    QTimer.singleShot(30, poll)
-    QTimer.singleShot(timeout, loop.quit)
-    loop.exec_()
-    assert window._thread is None
-
-
 @pytest.mark.skipif(not HAS_RESOURCES, reason="本机没有真实资源索引库")
-def test_gui_version_switch_marks_stale_and_invalid(qapp, monkeypatch):
+def test_gui_version_switch_marks_stale_and_invalid(qapp, monkeypatch, wait_pipeline):
     from Moge.ui.main_window import RESULT_CURRENT, RESULT_INVALID, RESULT_STALE, MainWindow
     from PyQt5.QtWidgets import QMessageBox
 
@@ -167,7 +150,7 @@ def test_gui_version_switch_marks_stale_and_invalid(qapp, monkeypatch):
     window._refresh_mc_versions()
     window._set_combo_data(window.mc_version, "1.20.1")
     window.apply_processing()
-    _wait(window)
+    wait_pipeline(window)
 
     result = window.results["minecraft"]
     assert result.stats["version"] == "1.20.1"
@@ -181,7 +164,7 @@ def test_gui_version_switch_marks_stale_and_invalid(qapp, monkeypatch):
     assert "INVALID" in window.stats_view.toPlainText() or "不支持" in window.stats_view.toPlainText()
 
     window.apply_processing()
-    _wait(window)
+    wait_pipeline(window)
     fresh = window.results["minecraft"]
     assert fresh is not result
     assert fresh.stats["version"] == "1.12.2"

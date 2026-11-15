@@ -3,7 +3,6 @@
 ##############################
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from PyQt5.QtCore import QRectF, Qt
@@ -167,15 +166,3 @@ def export_blueprint_pdf(
         painter.end()
 
     return str(target)
-
-
-def board_count(result: RenderResult, board_width: int = 29, board_height: int = 29) -> int:
-    spec = result.grid.spec
-    return len(board_partitions(spec.width, spec.height, board_width, board_height))
-
-
-def used_codes(result: RenderResult, limit: Optional[int] = None) -> list[str]:
-    counts = result.stats.get("counts", {})
-    entries = sorted(result.grid.entries, key=lambda entry: -int(counts.get(entry.id, 0)))
-    labels = [_entry_label(entry) for entry in entries if int(counts.get(entry.id, 0)) > 0]
-    return labels[:limit] if limit else labels

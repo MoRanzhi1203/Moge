@@ -7,8 +7,7 @@ from Moge.core.grid import (
     sample_grid,
     upscale_grid,
 )
-from Moge.core.image_processor import ResizeMode
-from Moge.core.models import GridSpec, PaletteEntry
+from Moge.core.models import GridSpec, PaletteEntry, ResizeMode
 
 
 def test_grid_spec_validation_and_derivation():

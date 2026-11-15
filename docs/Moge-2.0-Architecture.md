@@ -15,8 +15,7 @@ Moge 2.0 是在保留原有像素化能力的基础上扩展出的三模式本�
 ```text
 main.py                     入口：QApplication、单实例、日志、MainWindow
 core/
-  image_processor.py        旧版算法兼容层（均值/频数/K-Means 旧接口）
-  models.py                 旧参数 + 新数据模型（GridSpec/PixelGrid/RenderResult/...）
+  models.py                 数据模型（GridSpec/PixelGrid/RenderResult/ResizeMode/ProcessingCancelled）
   color_spaces.py           sRGB ↔ Lab(D65)、CIEDE2000、最近色索引
   grid.py                   网格采样（mean/mode/center/edge）、渲染、孤立单元统计
   clustering.py             量化算法注册表：KMeans/MiniBatch/Ward（RGB/Lab）
@@ -44,7 +43,7 @@ exporters/
 ui/
   main_window.py            三模式工作台、参数面板、任务管理、编辑、导出
   canvas.py                 可缩放/平移/最近邻渲染/网格叠层的编辑画布
-  worker.py                 ProcessingWorker（旧） + PipelineWorker（任务 ID）
+  worker.py                 PipelineWorker（任务 ID、进度与取消）
   theme.py                  浅色/深色主题
 tools/run_benchmarks.py     基准脚本（输出 JSON 与 Markdown 报告）
 tests/                      单元、集成、UI 冒烟、基准指标测试
@@ -90,9 +89,9 @@ tests/                      单元、集成、UI 冒烟、基准指标测试
 
 ## 6. 兼容性
 
-- `ProcessingParams`、`PixelMethod`、`img_resize`、`img_pixelize_mean`、`img_pixelize_common`、`color_clustering` 保持原签名与行为；旧测试继续通过。
-- `ui/worker.py` 保留 `ProcessingWorker`，新 UI 使用 `PipelineWorker`。
-- 旧版“缩放 → 均值/频数 → K-Means”链路仍可由兼容函数组合。
+- 旧版 `ProcessingParams`、`PixelMethod`、`image_processor` 处理函数与 `ProcessingWorker` 已移除，统一使用 `PipelineWorker + run_pipeline`。
+- `ResizeMode` 与 `ProcessingCancelled` 合并到 `core/models.py`；`GridSpec.from_block_size` 保留旧块大小推导能力。
+- `main.py`、`moge`、`Moge.spec` 入口保持不变。
 
 ## 7. 已知边界
 

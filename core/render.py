@@ -10,7 +10,6 @@ import numpy as np
 
 from Moge.core.grid import render_grid
 
-PREVIEW_STYLES = ("solid", "texture")
 _TEXTURE_CACHE: dict = {}
 _TEXTURE_CACHE_LIMIT = 256
 
@@ -38,10 +37,6 @@ def load_texture_tile(path: str, size: int) -> Optional[np.ndarray]:
         _TEXTURE_CACHE.clear()
     _TEXTURE_CACHE[key] = tile
     return tile
-
-
-def clear_texture_cache():
-    _TEXTURE_CACHE.clear()
 
 
 def _solid_tile(rgb, size: int) -> np.ndarray:
