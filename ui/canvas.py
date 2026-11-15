@@ -5,8 +5,8 @@
 from typing import Optional
 
 import numpy as np
-from PyQt5.QtCore import QPoint, QRectF, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtCore import QPoint, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QWidget
 
 
@@ -42,6 +42,11 @@ class GridCanvas(QWidget):
         self._press_cell: Optional[tuple[int, int]] = None
         self._locked = None
         self._selection = None
+        self._zoom_badge_text = ""
+        self._zoom_badge_timer = QTimer(self)
+        self._zoom_badge_timer.setSingleShot(True)
+        self._zoom_badge_timer.setInterval(900)
+        self._zoom_badge_timer.timeout.connect(self._hide_zoom_badge)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -145,6 +150,7 @@ class GridCanvas(QWidget):
         self._fit = True
         self._pan = QPoint(0, 0)
         self.update()
+        self.zoomChanged.emit(self._display_scale())
 
     def reset_view(self):
         """ 重置为适应窗口，清除手动缩放与平移 """
@@ -178,6 +184,7 @@ class GridCanvas(QWidget):
     def set_zoom(self, zoom: float):
         self._fit = False
         self._zoom = max(0.2, min(64.0, float(zoom)))
+        self._set_zoom_badge(self._zoom)
         self.update()
         self.zoomChanged.emit(self._zoom)
 
@@ -254,6 +261,42 @@ class GridCanvas(QWidget):
 
         painter.setPen(QPen(QColor("#4a5163"), 1))
         painter.drawRect(rect)
+        self._draw_zoom_badge(painter)
+
+    def _draw_zoom_badge(self, painter: QPainter):
+        """ 滚轮缩放时在画布右上角显示短暂提示，提供即时反馈 """
+        if not self._zoom_badge_text:
+            return
+        font = QFont("Segoe UI", 10)
+        font.setBold(True)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        width = metrics.horizontalAdvance(self._zoom_badge_text) + 18
+        height = metrics.height() + 10
+        badge = QRectF(self.width() - width - 12, 12, width, height)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(18, 20, 26, 210))
+        painter.drawRoundedRect(badge, 6, 6)
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(badge, Qt.AlignCenter, self._zoom_badge_text)
+        painter.restore()
+
+    def _set_zoom_badge(self, scale: float):
+        if scale <= 0.2001:
+            text = f"最小缩放 {scale:.2f}×"
+        elif scale >= 63.99:
+            text = f"最大缩放 {scale:.2f}×"
+        else:
+            text = f"缩放 {scale:.2f}×"
+        self._zoom_badge_text = text
+        self._zoom_badge_timer.start()
+        self.update()
+
+    def _hide_zoom_badge(self):
+        self._zoom_badge_text = ""
+        self.update()
 
     def _draw_locked(self, painter: QPainter, rect: QRectF):
         if self._locked is None or not self._locked.any() or self._grid[0] <= 0:
@@ -299,25 +342,37 @@ class GridCanvas(QWidget):
     def wheelEvent(self, event):
         if not self._image:
             return
+        delta = event.angleDelta().y()
+        if not delta:
+            return
+        # 按滚轮增量缩放：高分辨率触控板的小增量不再被放大成 25% 跳变
+        steps = delta / 120.0
+        old_scale = self._display_scale()
+        new_zoom = max(0.2, min(64.0, old_scale * (1.25 ** steps)))
+        if abs(new_zoom - old_scale) < 1e-6:
+            self._set_zoom_badge(new_zoom)
+            event.accept()
+            return
+
         position = event.pos()
         old_rect = self._image_rect()
-        old_scale = old_rect.width() / self._grid[0]
-        image_x = (position.x() - old_rect.left()) / old_scale
-        image_y = (position.y() - old_rect.top()) / old_scale
+        old_cell_scale = old_rect.width() / self._grid[0]
+        image_x = (position.x() - old_rect.left()) / old_cell_scale
+        image_y = (position.y() - old_rect.top()) / old_cell_scale
 
-        step = 1.25 if event.angleDelta().y() > 0 else 1 / 1.25
         self._fit = False
-        self._zoom = max(0.2, min(64.0, self._display_scale() * step))
-        new_scale = self._zoom
+        self._zoom = new_zoom
         center_x = self.width() / 2.0 + self._pan.x()
         center_y = self.height() / 2.0 + self._pan.y()
-        target_x = center_x - self._grid[0] * new_scale / 2.0
-        target_y = center_y - self._grid[1] * new_scale / 2.0
-        desired_x = position.x() - image_x * new_scale
-        desired_y = position.y() - image_y * new_scale
-        self._pan += QPoint(int(desired_x - target_x), int(desired_y - target_y))
+        target_x = center_x - self._grid[0] * new_zoom / 2.0
+        target_y = center_y - self._grid[1] * new_zoom / 2.0
+        desired_x = position.x() - image_x * new_zoom
+        desired_y = position.y() - image_y * new_zoom
+        self._pan += QPoint(round(desired_x - target_x), round(desired_y - target_y))
+        self._set_zoom_badge(new_zoom)
         self.update()
-        self.zoomChanged.emit(self._display_scale())
+        self.zoomChanged.emit(new_zoom)
+        event.accept()
 
     def mousePressEvent(self, event):
         self.setFocus()
@@ -397,3 +452,4 @@ class GridCanvas(QWidget):
         super().resizeEvent(event)
         if self._fit:
             self.update()
+            self.zoomChanged.emit(self._display_scale())

@@ -83,6 +83,10 @@ logger = get_module_logger(__name__)
 IMAGE_FILTER = "图片文件 (*.png *.jpg *.jpeg *.bmp *.webp)"
 PROJECT_FILTER = "Moge 工程 (*.moge)"
 
+RESULT_CURRENT = "CURRENT"
+RESULT_STALE = "STALE"
+RESULT_INVALID = "INVALID"
+
 
 class MainWindow(QMainWindow):
     """ 三模式像素艺术创作工作台 """
@@ -234,6 +238,7 @@ class MainWindow(QMainWindow):
         self.lbl_grid = QLabel("网格 -")
         self.lbl_colors = QLabel("颜色 -")
         self.lbl_zoom = QLabel("缩放 -")
+        self.lbl_preview = QLabel("预览：纯色")
         self.lbl_hover = QLabel("")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -243,7 +248,7 @@ class MainWindow(QMainWindow):
         self.btn_cancel.setVisible(False)
 
         status.addWidget(self.lbl_status, 1)
-        for widget in (self.lbl_hover, self.lbl_source, self.lbl_grid, self.lbl_colors, self.lbl_zoom):
+        for widget in (self.lbl_hover, self.lbl_preview, self.lbl_source, self.lbl_grid, self.lbl_colors, self.lbl_zoom):
             status.addPermanentWidget(widget)
         status.addPermanentWidget(self.progress)
         status.addPermanentWidget(self.btn_cancel)
@@ -396,7 +401,11 @@ class MainWindow(QMainWindow):
         self.mc_resource_mode.addItem("自动（优先真实贴图）", "auto")
         self.mc_resource_mode.addItem("仅真实贴图", "real")
         self.mc_resource_mode.addItem("内置近似色", "approx")
+        self.mc_strategy = QComboBox()
+        for key, label in minecraft_mode.MATCHING_OPTIONS:
+            self.mc_strategy.addItem(label, key)
         advanced_form.addRow("成本偏好:", self.mc_cost)
+        advanced_form.addRow("匹配策略:", self.mc_strategy)
         advanced_form.addRow("", self.mc_buildable)
         advanced_form.addRow("朝向:", self.mc_orientation)
         advanced_form.addRow("", self.mc_exclude_transparent)
@@ -673,6 +682,16 @@ class MainWindow(QMainWindow):
         self.palette_search.textChanged.connect(lambda _text: self._palette_timer.start())
         self.palette_sort.currentIndexChanged.connect(lambda _index: self._refresh_palette())
         self.palette_used_only.toggled.connect(lambda _checked: self._refresh_palette())
+        self.mc_edition.currentIndexChanged.connect(self._on_mc_context_changed)
+        self.mc_version.currentIndexChanged.connect(self._on_mc_context_changed)
+        self.mc_obtain.currentIndexChanged.connect(self._on_mc_context_changed)
+        self.mc_buildable.toggled.connect(self._on_mc_context_changed)
+        self.mc_orientation.currentIndexChanged.connect(self._on_mc_context_changed)
+        self.mc_exclude_transparent.toggled.connect(self._on_mc_context_changed)
+        self.mc_exclude_gravity.toggled.connect(self._on_mc_context_changed)
+        self.mc_resource_mode.currentIndexChanged.connect(self._on_mc_context_changed)
+        self.mc_strategy.currentIndexChanged.connect(self._on_mc_context_changed)
+        self.mc_categories.itemChanged.connect(self._on_mc_context_changed)
         self.bead_brand.currentIndexChanged.connect(self._on_bead_brand_changed)
         self.bead_series.currentIndexChanged.connect(self._on_bead_series_changed)
         self.bead_inventory.textEdited.connect(lambda _text: self.bead_inventory_map.clear())
@@ -740,6 +759,7 @@ class MainWindow(QMainWindow):
                 "exclude_transparent": self.mc_exclude_transparent.isChecked(),
                 "exclude_gravity": self.mc_exclude_gravity.isChecked(),
                 "resource_mode": self.mc_resource_mode.currentData(),
+                "matching_strategy": self.mc_strategy.currentData(),
                 "texture_overrides": dict(self.mc_texture_overrides),
                 "texture_pack_name": self.mc_texture_pack_name,
             }
@@ -795,6 +815,7 @@ class MainWindow(QMainWindow):
             self.mc_exclude_transparent.setChecked(bool(settings.get("exclude_transparent", False)))
             self.mc_exclude_gravity.setChecked(bool(settings.get("exclude_gravity", False)))
             self._set_combo_data(self.mc_resource_mode, settings.get("resource_mode", "auto"))
+            self._set_combo_data(self.mc_strategy, settings.get("matching_strategy", "perceptual"))
         else:
             catalog = settings.get("catalog")
             if catalog:
@@ -1180,10 +1201,35 @@ class MainWindow(QMainWindow):
         if task_id != self._active_task:
             return
         self.results[result.mode] = result
+        if result.mode == "minecraft":
+            edition = str(result.stats.get("edition") or "")
+            version = str(result.stats.get("version") or "")
+            target_ids = self._mc_candidate_ids(edition, version)
+            unexpected = [
+                entry.id for entry in result.grid.entries if target_ids and entry.id not in target_ids
+            ]
+            result.stats["version_isolated"] = not unexpected
+            if unexpected:
+                logger.error("处理结果包含目标版本之外的方块：%s", unexpected[:10])
+                result.stats["isolation_violations"] = unexpected
         if result.mode == self.mode:
             self._display_result(result)
+            state, _message = (
+                self._mc_state_text(result) if result.mode == "minecraft" else (RESULT_CURRENT, "")
+            )
+            version_label = (
+                f"{result.stats.get('edition')} {result.stats.get('version')}"
+                if result.mode == "minecraft" else ""
+            )
+            warning = (
+                " · 画质警告：当前材料集色差较大"
+                if result.mode == "minecraft" and result.stats.get("quality_warning")
+                else ""
+            )
             self.lbl_status.setText(
                 f"处理完成：{result.algorithm} · {result.elapsed_ms:.0f} ms"
+                + (f" · {state} {version_label}" if version_label else "")
+                + warning
             )
         else:
             self.lbl_status.setText(f"{registry.mode_label(result.mode)} 处理完成")
@@ -1236,6 +1282,106 @@ class MainWindow(QMainWindow):
             return None
         return self._sync_document(result)
 
+    # ---------- 版本一致性状态 ---------- #
+    def _mc_target(self) -> tuple[str, str]:
+        return (
+            str(self.mc_edition.currentData() or "java"),
+            str(self.mc_version.currentData() or ""),
+        )
+
+    def _mc_candidate_ids(self, edition: str, version: str) -> set[str]:
+        """ 目标版本的全部方块 ID；用于识别旧结果中的跨版本材料 """
+        key = (edition, version)
+        cache = getattr(self, "_mc_target_ids_cache", None)
+        if cache is None:
+            cache = {}
+            self._mc_target_ids_cache = cache
+        if key in cache:
+            return cache[key]
+        ids: set[str] = set()
+        try:
+            from Moge.core.modes import minecraft as minecraft_mode
+
+            blocks = minecraft_mode.candidate_blocks(
+                {
+                    "edition": edition,
+                    "version": version,
+                    "resource_mode": "auto",
+                    "buildable_only": False,
+                }
+            )
+            ids = {block.block_id for block in blocks}
+        except Exception:
+            logger.warning("读取目标版本候选集合失败", exc_info=True)
+        if len(cache) >= 8:
+            cache.clear()
+        cache[key] = ids
+        return ids
+
+    @staticmethod
+    def _mc_signature(settings: dict) -> tuple:
+        return (
+            str(settings.get("edition") or ""),
+            str(settings.get("version") or ""),
+            tuple(sorted(settings.get("categories") or [])),
+            str(settings.get("obtainability") or ""),
+            bool(settings.get("buildable_only", True)),
+            settings.get("max_cost_tier"),
+            str(settings.get("orientation") or ""),
+            bool(settings.get("exclude_transparent", False)),
+            bool(settings.get("exclude_gravity", False)),
+            str(settings.get("resource_mode") or ""),
+            str(settings.get("matching_strategy") or ""),
+        )
+
+    def _mc_state_text(self, result) -> tuple[str, str]:
+        generated_edition = str(result.stats.get("edition") or "")
+        generated_version = str(result.stats.get("version") or "")
+        target_edition, target_version = self._mc_target()
+        generated = f"{generated_edition} {generated_version}".strip() or "未知版本"
+        target = f"{target_edition} {target_version}".strip() or "未知版本"
+
+        target_ids = self._mc_candidate_ids(target_edition, target_version)
+        unexpected = [entry.id for entry in result.grid.entries if target_ids and entry.id not in target_ids]
+        if unexpected:
+            preview = "、".join(unexpected[:6])
+            return RESULT_INVALID, (
+                f"旧结果（{generated}）包含 {len(unexpected)} 个 {target} 不支持的材料"
+                f"（如 {preview}），请重新处理"
+            )
+
+        saved = (result.settings or {}).get("params") or {}
+        if (generated_edition, generated_version) != (target_edition, target_version) or (
+            self._mc_signature(saved) != self._mc_signature(self._collect_settings("minecraft"))
+        ):
+            return RESULT_STALE, f"旧结果生成于 {generated}，当前选择 {target}，请重新处理"
+        return RESULT_CURRENT, f"当前结果与 {generated} 一致"
+
+    def _on_mc_context_changed(self, *_args):
+        """ 版本/筛选变化后刷新状态，不自动重新处理 """
+        if self.mode != "minecraft":
+            self._update_action_states()
+            return
+        result = self._current_result()
+        self._refresh_stats()
+        self._update_status()
+        self._update_action_states()
+        if result is None:
+            return
+        state, message = self._mc_state_text(result)
+        self.lbl_status.setText(f"{state} · {message}")
+
+    def _missing_texture_entries(self, document, result) -> list:
+        counts = result.stats.get("counts", {})
+        missing = []
+        for entry in document.entries:
+            if int(counts.get(entry.id, 0)) <= 0:
+                continue
+            path = str(entry.meta.get("texture_path") or "")
+            if not path or not Path(path).is_file():
+                missing.append(entry)
+        return missing
+
     def _sync_document(self, result: RenderResult) -> GridDocument:
         """ 结果与文档共用同一份 labels，保证编辑、渲染、导出读取同一数据 """
         document = self.documents.get(result.mode)
@@ -1256,6 +1402,8 @@ class MainWindow(QMainWindow):
             (result.grid.spec.width, result.grid.spec.height),
         )
         self.canvas.set_editable(self.interaction_mode == "edit")
+        self._update_preview_label()
+        self._on_zoom(self.canvas.zoom())
         self._refresh_preview_actions()
         self._refresh_palette()
         self._refresh_stats()
@@ -1271,6 +1419,8 @@ class MainWindow(QMainWindow):
         self.canvas.set_editable(False)
         self.canvas.set_locked_mask(None)
         self.canvas.set_selection(None)
+        self.lbl_preview.setText("预览：源图")
+        self._on_zoom(self.canvas.zoom())
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
@@ -1297,17 +1447,31 @@ class MainWindow(QMainWindow):
         if style == self.preview_style:
             return
         document = self._current_document()
-        if document is None:
+        result = self._current_result()
+        if document is None or result is None:
             return
-        if style == "texture" and not any(entry.meta.get("texture_path") for entry in document.entries):
-            self.preview_style = "solid"
-            self.act_preview_solid.setChecked(True)
-            self.lbl_status.setText("当前作品没有可用真实贴图，保持纯色预览")
-            return
+        if style == "texture":
+            missing = self._missing_texture_entries(document, result)
+            if missing:
+                self.preview_style = "solid"
+                self.act_preview_solid.setChecked(True)
+                names = "、".join(
+                    str(entry.meta.get("code") or entry.name) for entry in missing[:6]
+                )
+                message = f"{len(missing)} 个已用材料缺少真实贴图（{names}），已保持纯色预览"
+                self.lbl_status.setText(message)
+                QMessageBox.warning(self, "缺少真实贴图", message)
+                return
         self.preview_style = style
         self._rerender_preview()
+        self._update_preview_label()
         self.lbl_status.setText(
             "真实纹理预览：仅改变渲染方式，材料统计不变" if style == "texture" else "已切换为纯色预览"
+        )
+
+    def _update_preview_label(self):
+        self.lbl_preview.setText(
+            "预览：真实纹理" if self.preview_style == "texture" else "预览：纯色"
         )
 
     def _rerender_preview(self):
@@ -1321,8 +1485,16 @@ class MainWindow(QMainWindow):
 
     def _refresh_preview_actions(self):
         document = self._current_document()
-        has_texture = bool(document) and any(entry.meta.get("texture_path") for entry in document.entries)
+        result = self._current_result()
+        has_texture = False
+        if document is not None and result is not None:
+            counts = result.stats.get("counts", {})
+            used = sum(1 for entry in document.entries if int(counts.get(entry.id, 0)) > 0)
+            has_texture = used > 0 and not self._missing_texture_entries(document, result)
         self.act_preview_texture.setEnabled(has_texture)
+        self.act_preview_texture.setToolTip(
+            "读取当前版本真实 PNG 渲染" if has_texture else "存在缺少真实贴图的已用材料"
+        )
 
     def _on_cell_inspected(self, col, row):
         document = self._current_document()
@@ -1475,11 +1647,24 @@ class MainWindow(QMainWindow):
             f"<b>孤立单元</b>：{stats.get('isolated_cells', 0)}</p>",
         ]
         if result.mode == "minecraft":
+            state, message = self._mc_state_text(result)
+            color = {RESULT_CURRENT: "#6cc070", RESULT_STALE: "#e0a030", RESULT_INVALID: "#d05050"}.get(
+                state, "#9aa4b8"
+            )
+            lines.insert(
+                1,
+                f"<p><b>结果状态</b>：<span style='color:{color}'><b>{state}</b></span><br>{message}</p>",
+            )
+            target_edition, target_version = self._mc_target()
             vanilla = stats.get("vanilla_coverage") or {}
             renderable = stats.get("renderable_coverage") or {}
             pack = stats.get("pack_coverage") or {}
+            strategy_label = dict(minecraft_mode.MATCHING_OPTIONS).get(
+                str(stats.get("matching_strategy") or "perceptual"), "感知色差优先"
+            )
             lines.append(
-                f"<p><b>版本</b>：{stats.get('edition')} {stats.get('version')}<br>"
+                f"<p><b>结果版本</b>：{stats.get('edition')} {stats.get('version')}<br>"
+                f"<b>当前选择</b>：{target_edition} {target_version}<br>"
                 f"<b>候选方块</b>：{stats.get('candidate_blocks')}<br>"
                 f"<b>方块种类</b>：{stats.get('block_types')}<br>"
                 f"<b>合成来源</b>：{'Mojang 真实贴图' if stats.get('resource_source') == 'mojang-resource' else '内置近似色'}<br>"
@@ -1491,8 +1676,20 @@ class MainWindow(QMainWindow):
                 f"<b>附加资源包覆盖率</b>：{pack.get('numerator', 0)}/{pack.get('denominator', 0)}"
                 f"（{pack.get('ratio', 0) * 100:.1f}%）<br>"
                 f"<b>预览</b>：{'真实纹理预览' if self.preview_style == 'texture' else '纯色预览'}<br>"
+                f"<b>匹配策略</b>：{strategy_label}<br>"
+                f"<b>纹理特征误差</b>：{stats.get('texture_feature_error', 0):.3f}<br>"
                 f"<b>ΔE00 均值 / P95</b>：{stats.get('mean_delta_e00', 0):.2f} / {stats.get('p95_delta_e00', 0):.2f}</p>"
             )
+            quality = stats.get("quality_message") or ""
+            if quality:
+                quality_color = "#d05050" if stats.get("quality_warning") else "#6cc070"
+                lines.append(
+                    f"<p><b>画质评估</b>：<span style='color:{quality_color}'>{quality}</span></p>"
+                )
+            limitations = stats.get("render_limitations") or []
+            if limitations:
+                items = "".join(f"<li>{item}</li>" for item in limitations)
+                lines.append(f"<p><b>渲染限制</b></p><ul>{items}</ul>")
         elif result.mode == "beads":
             trust_counts = stats.get("catalog_trust_counts") or {}
             material_counts = stats.get("catalog_material_counts") or {}
@@ -1555,7 +1752,7 @@ class MainWindow(QMainWindow):
         self.lbl_hover.setText("" if col < 0 else f"({col}, {row})")
 
     def _on_zoom(self, value):
-        self.lbl_zoom.setText(f"{value:.2f}×")
+        self.lbl_zoom.setText(f"缩放 {value:.2f}×")
 
     # ---------- 编辑 ---------- #
     def _on_tool_changed(self, action):
@@ -1593,6 +1790,9 @@ class MainWindow(QMainWindow):
         if document is None or result is None or self._thread is not None:
             return
         if self.interaction_mode != "edit":
+            return
+        if result.mode == "minecraft" and self._mc_state_text(result)[0] != RESULT_CURRENT:
+            self.lbl_status.setText("当前结果与所选版本/筛选不一致，请重新处理后再编辑")
             return
         labels = document.labels
         height, width = labels.shape

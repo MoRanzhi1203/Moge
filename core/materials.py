@@ -71,6 +71,10 @@ class MinecraftBlock:
     texture_sha256: str = ""
     texture_path: str = ""
     verified: bool = False
+    complexity: float = 0.0
+    brightness_std: float = 0.0
+    median_rgb: RGB = (0, 0, 0)
+    tinted: bool = False
 
     def available_in(self, version: str, edition: str = "java") -> bool:
         if edition not in self.editions:

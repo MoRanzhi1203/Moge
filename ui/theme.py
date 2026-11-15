@@ -7,6 +7,7 @@ QMainWindow, QWidget { background-color: #20232a; color: #e8e8e8; }
 QToolBar { background: #262a33; border: 0; spacing: 6px; padding: 4px; }
 QToolBar QToolButton { padding: 5px 8px; border-radius: 4px; }
 QToolBar QToolButton:hover { background: #333846; }
+QToolBar QToolButton:checked { background: #2f6feb; color: #ffffff; font-weight: bold; border: 1px solid #6d9bff; }
 QGroupBox { border: 1px solid #3a3f4b; border-radius: 6px; margin-top: 10px; padding-top: 8px; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #9fb2c8; }
 QPushButton { background: #2f6feb; color: white; border: 0; padding: 6px 10px; border-radius: 4px; }
@@ -30,6 +31,7 @@ QMainWindow, QWidget { background-color: #f4f6f9; color: #20232a; }
 QToolBar { background: #ffffff; border: 0; spacing: 6px; padding: 4px; }
 QToolBar QToolButton { padding: 5px 8px; border-radius: 4px; }
 QToolBar QToolButton:hover { background: #e6eefc; }
+QToolBar QToolButton:checked { background: #2f6feb; color: #ffffff; font-weight: bold; border: 1px solid #1d4fbf; }
 QGroupBox { border: 1px solid #d5dbe5; border-radius: 6px; margin-top: 10px; padding-top: 8px; background: #ffffff; }
 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #39557a; }
 QPushButton { background: #2f6feb; color: white; border: 0; padding: 6px 10px; border-radius: 4px; }

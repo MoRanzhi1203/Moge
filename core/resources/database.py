@@ -289,8 +289,18 @@ class ResourceDatabase:
         rows = self.connection.execute(
             "SELECT * FROM blocks WHERE version_id=? ORDER BY block_id", (version_row["id"],)
         ).fetchall()
-        texture_rows = self.connection.execute("SELECT sha256, path FROM textures").fetchall()
-        texture_paths = {row["sha256"]: row["path"] for row in texture_rows}
+        texture_rows = self.connection.execute(
+            "SELECT sha256, path, complexity, brightness_std, median_r, median_g, median_b FROM textures"
+        ).fetchall()
+        texture_map = {
+            row["sha256"]: {
+                "path": row["path"],
+                "complexity": float(row["complexity"] or 0),
+                "brightness_std": float(row["brightness_std"] or 0),
+                "median_rgb": (row["median_r"], row["median_g"], row["median_b"]),
+            }
+            for row in texture_rows
+        }
         result = []
         for row in rows:
             item = dict(row)
@@ -305,7 +315,10 @@ class ResourceDatabase:
                     "sha256": face["texture_sha256"],
                     "rgb": (face["rgb_r"], face["rgb_g"], face["rgb_b"]),
                     "lab": (face["lab_l"], face["lab_a"], face["lab_b"]),
-                    "path": texture_paths.get(face["texture_sha256"], ""),
+                    "path": texture_map.get(face["texture_sha256"], {}).get("path", ""),
+                    "complexity": texture_map.get(face["texture_sha256"], {}).get("complexity", 0.0),
+                    "brightness_std": texture_map.get(face["texture_sha256"], {}).get("brightness_std", 0.0),
+                    "median_rgb": texture_map.get(face["texture_sha256"], {}).get("median_rgb", (0, 0, 0)),
                 }
                 for face in faces
             }

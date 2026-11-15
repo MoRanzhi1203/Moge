@@ -307,6 +307,10 @@ class ResourceManager:
                     texture_sha256=face.get("sha256", ""),
                     texture_path=face.get("path", ""),
                     verified=bool(row.get("verified")),
+                    complexity=float(face.get("complexity", 0.0)),
+                    brightness_std=float(face.get("brightness_std", 0.0)),
+                    median_rgb=tuple(face.get("median_rgb") or (0, 0, 0)),
+                    tinted=bool(row.get("tinted")),
                 )
             )
         return blocks
