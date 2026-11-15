@@ -10,6 +10,7 @@ _PACKAGE_PARENT = str(Path(__file__).resolve().parent.parent)
 if _PACKAGE_PARENT not in sys.path:
     sys.path.insert(0, _PACKAGE_PARENT)
 
+from PyQt5.QtCore import Qt  # noqa: E402
 from PyQt5.QtNetwork import QLocalServer, QLocalSocket  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
@@ -44,6 +45,10 @@ def main():
     logger = configure_logger()  # 调用日志配置函数
     logger.info("====== 应用程序启动 ======")
 
+    # 高 DPI 支持须在 QApplication 创建前设置
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     # 必须先创建 Qt 应用，再使用任何 Qt 控件
     app = QApplication(sys.argv)  # sys.argv是命令行参数列表
 
@@ -56,7 +61,7 @@ def main():
 
     # 初始化主窗口
     window = MainWindow()  # 创建MainWindow对象
-    window.setWindowTitle('墨格 - 图像像素化处理器')  # 设置窗口标题
+    window.setWindowTitle('墨格 Moge 2.0 - 像素艺术工作台')  # 设置窗口标题
     window.show()  # 显示窗口
 
     # 记录启动完成

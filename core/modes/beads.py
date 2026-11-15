@@ -30,6 +30,7 @@ BEAD_DEFAULTS: dict[str, object] = {
     "disabled_ids": [],
     "board_width": 29,
     "board_height": 29,
+    "pack_size": 1000,
 }
 
 DISPLAY_NOTE = "内置色卡为屏幕近似且未验证，不代表任何品牌的官方色值；请导入并核对官方色卡。"
@@ -153,6 +154,12 @@ def stage_map_beads(context: PipelineContext):
     deltas = delta_e_00(srgb_to_lab(pixels[::step]), srgb_to_lab(palette_rgb[indices[::step]]))
 
     used_ids = {context.entries[int(index)].id for index in np.unique(indices)}
+    flat = context.labels.reshape(-1)
+    flat = flat[flat >= 0]
+    values, counts = np.unique(flat, return_counts=True) if flat.size else (np.array([]), np.array([]))
+    pack_size = max(1, int(settings.get("pack_size", 1000)))
+    packs_required = int(sum(int(np.ceil(count / pack_size)) for count in counts))
+
     context.stats.update(
         {
             "brand": settings.get("brand"),
@@ -167,6 +174,8 @@ def stage_map_beads(context: PipelineContext):
             "mean_delta_e00": float(np.mean(deltas)),
             "p95_delta_e00": float(np.percentile(deltas, 95)),
             "verified_catalog": all(item.verified for item in candidates),
+            "pack_size": pack_size,
+            "packs_required": packs_required,
             "note": DISPLAY_NOTE,
         }
     )

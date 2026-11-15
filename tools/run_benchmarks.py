@@ -19,6 +19,7 @@ from Moge.core.benchmarks import (  # noqa: E402
     run_clustering_suite,
     run_material_comparison,
     run_preset_suite,
+    run_spectral_experiment,
     summarize,
 )
 
@@ -68,6 +69,24 @@ def _material_summary(records):
     }
 
 
+def _spectral_summary(records):
+    groups = {}
+    for record in records:
+        groups.setdefault((record["target_colors"], record["algorithm"]), []).append(record)
+    return {
+        key: {
+            "runs": len(items),
+            "mean_delta_e00": mean(item["mean_delta_e00"] for item in items),
+            "edge_correlation": mean(item["edge_correlation"] for item in items),
+            "isolated_cells": mean(item["isolated_cells"] for item in items),
+            "elapsed_ms": mean(item["elapsed_ms"] for item in items),
+            "peak_kb": mean(item["peak_kb"] for item in items),
+            "fallbacks": sum(item["fallback"] for item in items),
+        }
+        for key, items in groups.items()
+    }
+
+
 def _slice(summary, grid, colors):
     return sorted(
         [row for row in summary if row["grid"] == grid and row["target_colors"] == colors],
@@ -75,11 +94,12 @@ def _slice(summary, grid, colors):
     )
 
 
-def _build_markdown(records, presets, materials, env, timestamp):
+def _build_markdown(records, presets, materials, spectral, env, timestamp):
     summary = summarize(records)
     aggregate = aggregate_by_algorithm(records)
     preset_summary = _preset_summary(presets)
     material_summary = _material_summary(materials)
+    spectral_summary = _spectral_summary(spectral)
     slice_rows = _slice(summary, 64, 16)
     best = slice_rows[0] if slice_rows else None
     fastest = min(slice_rows, key=lambda row: row["elapsed_ms"]) if slice_rows else None
@@ -117,28 +137,29 @@ def _build_markdown(records, presets, materials, env, timestamp):
         "",
         "## 2. 颜色量化算法对照（网格 64×64，16 色）",
         "",
-        "| 算法 | 平均 ΔE00 | P95 ΔE00 | 边缘相关 | 孤立单元 | 平均耗时 (ms) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| 算法 | 平均 ΔE00 | P95 ΔE00 | 边缘相关 | 孤立单元 | 平均耗时 (ms) | Python 峰值 (KB) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in slice_rows:
         lines.append(
             f"| {ALGORITHM_LABELS.get(row['algorithm'], row['algorithm'])} | "
             f"{_fmt(row['mean_delta_e00'])} | {_fmt(row['p95_delta_e00'])} | "
             f"{_fmt(row['edge_correlation'])} | {_fmt(row['isolated_cells'], 1)} | "
-            f"{_fmt(row['elapsed_ms'], 1)} |"
+            f"{_fmt(row['elapsed_ms'], 1)} | {_fmt(row['peak_kb'], 0)} |"
         )
 
     lines += [
         "",
         "## 3. 全部组合平均（3 种网格 × 4 种色数 × 7 张图）",
         "",
-        "| 算法 | 运行数 | 平均 ΔE00 | 边缘相关 | 平均耗时 (ms) |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| 算法 | 运行数 | 平均 ΔE00 | 边缘相关 | 平均耗时 (ms) | Python 峰值 (KB) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in sorted(aggregate, key=lambda item: item["mean_delta_e00"]):
         lines.append(
             f"| {ALGORITHM_LABELS.get(row['algorithm'], row['algorithm'])} | {row['runs']} | "
-            f"{_fmt(row['mean_delta_e00'])} | {_fmt(row['edge_correlation'])} | {_fmt(row['elapsed_ms'], 1)} |"
+            f"{_fmt(row['mean_delta_e00'])} | {_fmt(row['edge_correlation'])} | "
+            f"{_fmt(row['elapsed_ms'], 1)} | {_fmt(row['peak_kb'], 0)} |"
         )
 
     lines += [
@@ -171,7 +192,41 @@ def _build_markdown(records, presets, materials, env, timestamp):
             f"{diff:+.3f} | {row['legal_rate'] * 100:.1f}% |"
         )
 
-    lines += ["", "## 6. 实测结论与取舍", ""]
+    spectral_kmeans = [row for (colors, algorithm), row in spectral_summary.items() if algorithm == "kmeans_lab"]
+    spectral_rows = [row for (colors, algorithm), row in spectral_summary.items() if algorithm == "spectral_lab"]
+    spectral_avg_de = mean(row["mean_delta_e00"] for row in spectral_rows) if spectral_rows else 0.0
+    spectral_avg_ms = mean(row["elapsed_ms"] for row in spectral_rows) if spectral_rows else 0.0
+    kmeans_avg_de = mean(row["mean_delta_e00"] for row in spectral_kmeans) if spectral_kmeans else 0.0
+    kmeans_avg_ms = mean(row["elapsed_ms"] for row in spectral_kmeans) if spectral_kmeans else 0.0
+
+    lines += [
+        "",
+        "## 6. 谱聚类区域实验（32×32 网格，≤1024 个区域）",
+        "",
+        "| 色数 | 算法 | 平均 ΔE00 | 边缘相关 | 孤立单元 | 耗时 (ms) | Python 峰值 (KB) | 回退次数 |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for (colors, algorithm), row in sorted(spectral_summary.items(), key=lambda item: (item[0][0], item[0][1])):
+        lines.append(
+            f"| {colors} | {ALGORITHM_LABELS.get(algorithm, algorithm)} | "
+            f"{_fmt(row['mean_delta_e00'])} | {_fmt(row['edge_correlation'])} | "
+            f"{_fmt(row['isolated_cells'], 1)} | {_fmt(row['elapsed_ms'], 1)} | "
+            f"{_fmt(row['peak_kb'], 0)} | {row['fallbacks']} |"
+        )
+    lines.append("")
+    lines.append(
+        f"- 谱聚类平均 ΔE00 {_fmt(spectral_avg_de)}、耗时 {_fmt(spectral_avg_ms, 1)} ms；"
+        f"同规模 K-Means 平均 ΔE00 {_fmt(kmeans_avg_de)}、耗时 {_fmt(kmeans_avg_ms, 1)} ms。"
+    )
+    if spectral_avg_de <= kmeans_avg_de and spectral_avg_ms < kmeans_avg_ms:
+        lines.append("- 谱聚类在本轮同时改善色差与耗时，但这只覆盖 32×32 合成图，仍需真实照片验证；暂不进入 UI。")
+    else:
+        lines.append(
+            "- 谱聚类在本轮未同时优于 K-Means（色差或耗时至少一项更差），"
+            "**仅保留为实验脚本，不加入正式 UI**。"
+        )
+
+    lines += ["", "## 7. 实测结论与取舍", ""]
     if best:
         lines.append(
             f"- 在 64×64 / 16 色切片中，平均色差最低的是 **{ALGORITHM_LABELS.get(best['algorithm'])}**"
@@ -227,15 +282,17 @@ def _build_markdown(records, presets, materials, env, timestamp):
 
     lines += [
         "",
-        "## 7. 淘汰与未实现项（诚实声明）",
+        "## 8. 淘汰与未实现项（诚实声明）",
         "",
-        "- 谱聚类（区域图）、BIRCH、GMM、DBSCAN/HDBSCAN、Mean Shift、Affinity Propagation：",
+        "- 谱聚类已按要求仅在 32×32 区域图上实验；是否保留取决于第 6 节实测结论。",
+        "- BIRCH、GMM、DBSCAN/HDBSCAN、Mean Shift、Affinity Propagation：",
         "  **本轮未实现、未接入 UI、未做基准**，不声称有效。",
         "- 真实 Minecraft 版本贴图与官方拼豆色卡未包含在仓库；内置数据为屏幕近似，",
         "  相关色差与材料结论仅对当前近似数据成立。",
+        "- Python 峰值来自 `tracemalloc`，不包含 NumPy 原生分配；真实内存占用需系统级工具复测。",
         "- 未做人工盲测与真实照片主观评估；后续需要补充。",
         "",
-        "## 8. 复现",
+        "## 9. 复现",
         "",
         "```powershell",
         "pip install -e \".[dev]\"",
@@ -262,6 +319,8 @@ def main():
     presets = run_preset_suite(images)
     print("运行材料映射对照...")
     materials = run_material_comparison(images)
+    print("运行谱聚类区域实验（32×32）...")
+    spectral = run_spectral_experiment(images)
     env = environment_info()
 
     benchmarks_dir = ROOT / "benchmarks"
@@ -275,15 +334,20 @@ def main():
         "preset_summary": _preset_summary(presets),
         "materials": materials,
         "material_summary": _material_summary(materials),
+        "spectral": spectral,
+        "spectral_summary": [
+            {"target_colors": key[0], "algorithm": key[1], **value}
+            for key, value in _spectral_summary(spectral).items()
+        ],
     }
     (benchmarks_dir / "results.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    markdown = _build_markdown(clustering, presets, materials, env, timestamp)
+    markdown = _build_markdown(clustering, presets, materials, spectral, env, timestamp)
     (ROOT / "docs" / "Clustering-Benchmarks.md").write_text(markdown, encoding="utf-8")
     print("已写入 benchmarks/results.json 与 docs/Clustering-Benchmarks.md")
-    print(f"记录数：聚类 {len(clustering)}，预设 {len(presets)}，材料 {len(materials)}")
+    print(f"记录数：聚类 {len(clustering)}，预设 {len(presets)}，材料 {len(materials)}，谱聚类 {len(spectral)}")
 
 
 if __name__ == "__main__":

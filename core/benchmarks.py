@@ -4,6 +4,7 @@
 
 import platform
 import sys
+import tracemalloc
 from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Callable, Optional
@@ -11,7 +12,7 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
-from Moge.core.clustering import ALGORITHM_INFO, quantize
+from Moge.core.clustering import ALGORITHM_INFO, EXPERIMENTAL_ALGORITHMS, quantize
 from Moge.core.color_spaces import delta_e_00, nearest_lab_index, srgb_to_lab
 from Moge.core.grid import ensure_rgb, isolated_cells, render_grid, sample_grid
 from Moge.core.materials import BEAD_CATALOG, filter_beads, filter_blocks
@@ -143,7 +144,9 @@ def run_clustering_suite(
     images: Optional[dict[str, np.ndarray]] = None,
     grid_sizes: Sequence[int] = (32, 64, 128),
     color_counts: Sequence[int] = (8, 16, 32, 64),
-    algorithms: Sequence[str] = tuple(ALGORITHM_INFO.keys()),
+    algorithms: Sequence[str] = tuple(
+        key for key in ALGORITHM_INFO if key not in EXPERIMENTAL_ALGORITHMS
+    ),
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> list[dict[str, object]]:
     """ 统一输入、种子与网格下的算法对照 """
@@ -157,7 +160,10 @@ def run_clustering_suite(
             spec = GridSpec(grid_size, grid_size)
             for colors in color_counts:
                 for algorithm in algorithms:
+                    tracemalloc.start()
                     result = run_pipeline(source_rgb, _pixel_config(spec, algorithm, colors))
+                    peak = tracemalloc.get_traced_memory()[1]
+                    tracemalloc.stop()
                     metrics = evaluate_result(source_rgb, result)
                     records.append(
                         {
@@ -165,12 +171,44 @@ def run_clustering_suite(
                             "grid": grid_size,
                             "target_colors": colors,
                             "algorithm": algorithm,
+                            "peak_kb": peak / 1024.0,
                             **metrics,
                         }
                     )
                     index += 1
                     if progress:
                         progress(index, total)
+    return records
+
+
+def run_spectral_experiment(
+    images: Optional[dict[str, np.ndarray]] = None,
+    grid_size: int = 32,
+    color_counts: Sequence[int] = (8, 16, 32, 64),
+) -> list[dict[str, object]]:
+    """ 仅在 ≤1024 个网格区域上对比谱聚类与 K-Means，不进入正式 UI """
+    images = images or make_benchmark_images()
+    records: list[dict[str, object]] = []
+    for image_name, image in images.items():
+        source_rgb, _ = ensure_rgb(image)
+        spec = GridSpec(grid_size, grid_size)
+        for colors in color_counts:
+            for algorithm in ("kmeans_lab", "spectral_lab"):
+                tracemalloc.start()
+                result = run_pipeline(source_rgb, _pixel_config(spec, algorithm, colors))
+                peak = tracemalloc.get_traced_memory()[1]
+                tracemalloc.stop()
+                records.append(
+                    {
+                        "image": image_name,
+                        "grid": grid_size,
+                        "target_colors": colors,
+                        "algorithm": algorithm,
+                        "peak_kb": peak / 1024.0,
+                        "fallback": int(result.diagnostics.get("spectral_fallback", 0)),
+                        **evaluate_result(source_rgb, result),
+                    }
+                )
     return records
 
 
@@ -192,6 +230,7 @@ def summarize(records: Sequence[dict[str, object]]) -> list[dict[str, object]]:
                 "edge_correlation": float(np.mean([item["edge_correlation"] for item in items])),
                 "isolated_cells": float(np.mean([item["isolated_cells"] for item in items])),
                 "elapsed_ms": float(np.mean([item["elapsed_ms"] for item in items])),
+                "peak_kb": float(np.mean([item["peak_kb"] for item in items])),
             }
         )
     return summary
@@ -210,6 +249,7 @@ def aggregate_by_algorithm(records: Sequence[dict[str, object]]) -> list[dict[st
             "edge_correlation": float(np.mean([item["edge_correlation"] for item in items])),
             "isolated_cells": float(np.mean([item["isolated_cells"] for item in items])),
             "elapsed_ms": float(np.mean([item["elapsed_ms"] for item in items])),
+            "peak_kb": float(np.mean([item["peak_kb"] for item in items])),
         }
         for algorithm, items in groups.items()
     ]

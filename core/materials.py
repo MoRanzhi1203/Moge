@@ -25,6 +25,7 @@ MC_CATEGORIES: dict[str, str] = {
     "stone": "石头",
     "sandstone": "砂岩",
     "dirt": "泥土",
+    "sand": "沙/砾石",
     "glass": "玻璃",
     "mineral": "矿物/金属",
     "nether": "下界",
@@ -60,6 +61,8 @@ class MinecraftBlock:
     introduced: str = "1.0"
     removed: Optional[str] = None
     cost_tier: int = 2
+    orientation: str = "none"  # none / axis / facing
+    visible_face: str = "all"  # all / top / side / front
     source: str = "builtin-approx"
     note: str = ""
 
@@ -115,13 +118,13 @@ MC_BLOCKS: tuple[MinecraftBlock, ...] = (
     _block("terracotta", "陶瓦", (152, 94, 67), "terracotta", renewable=True, cost_tier=2),
     _block("white_terracotta", "白色陶瓦", (209, 178, 161), "terracotta", renewable=True, cost_tier=2),
     _block("orange_terracotta", "橙色陶瓦", (161, 83, 37), "terracotta", renewable=True, cost_tier=2),
-    _block("white_glazed_terracotta", "白色带釉陶瓦", (188, 212, 202), "glazed", cost_tier=3),
-    _block("orange_glazed_terracotta", "橙色带釉陶瓦", (154, 118, 58), "glazed", cost_tier=3),
+    _block("white_glazed_terracotta", "白色带釉陶瓦", (188, 212, 202), "glazed", orientation="facing", cost_tier=3),
+    _block("orange_glazed_terracotta", "橙色带釉陶瓦", (154, 118, 58), "glazed", orientation="facing", cost_tier=3),
     _block("oak_planks", "橡木木板", (162, 130, 78), "planks", renewable=True, cost_tier=1),
     _block("spruce_planks", "云杉木板", (114, 84, 48), "planks", renewable=True, cost_tier=1),
     _block("birch_planks", "白桦木板", (192, 175, 121), "planks", renewable=True, cost_tier=1),
-    _block("oak_log", "橡木原木", (109, 85, 50), "log", renewable=True, cost_tier=1),
-    _block("spruce_log", "云杉原木", (58, 37, 16), "log", renewable=True, cost_tier=1),
+    _block("oak_log", "橡木原木", (109, 85, 50), "log", renewable=True, orientation="axis", visible_face="side", cost_tier=1),
+    _block("spruce_log", "云杉原木", (58, 37, 16), "log", renewable=True, orientation="axis", visible_face="side", cost_tier=1),
     _block("stone", "石头", (125, 125, 125), "stone", cost_tier=1),
     _block("cobblestone", "圆石", (122, 122, 122), "stone", cost_tier=1),
     _block("stone_bricks", "石砖", (122, 121, 121), "stone", cost_tier=1),
@@ -130,8 +133,11 @@ MC_BLOCKS: tuple[MinecraftBlock, ...] = (
     _block("calcite", "方解石", (223, 224, 220), "stone", introduced="1.17", cost_tier=2),
     _block("sandstone", "砂岩", (216, 203, 155), "sandstone", cost_tier=1),
     _block("red_sandstone", "红砂岩", (188, 98, 35), "sandstone", cost_tier=1),
+    _block("sand", "沙子", (219, 207, 163), "sand", gravity=True, cost_tier=1),
+    _block("red_sand", "红沙", (188, 101, 30), "sand", gravity=True, cost_tier=1),
+    _block("gravel", "沙砾", (131, 127, 126), "sand", gravity=True, cost_tier=1),
     _block("dirt", "泥土", (134, 96, 67), "dirt", cost_tier=1),
-    _block("grass_block", "草方块", (95, 159, 53), "natural", renewable=True, cost_tier=1),
+    _block("grass_block", "草方块", (95, 159, 53), "natural", renewable=True, visible_face="top", cost_tier=1),
     _block("glass", "玻璃", (190, 220, 225), "glass", transparent=True, cost_tier=2),
     _block("white_stained_glass", "白色染色玻璃", (222, 238, 240), "glass", transparent=True, cost_tier=2),
     _block("iron_block", "铁块", (220, 220, 220), "mineral", cost_tier=3),
@@ -162,8 +168,11 @@ def filter_blocks(
     max_cost_tier: Optional[int] = None,
     included_ids: Optional[Iterable[str]] = None,
     excluded_ids: Optional[Iterable[str]] = None,
+    orientation: str = "any",
+    exclude_transparent: bool = False,
+    exclude_gravity: bool = False,
 ) -> list[MinecraftBlock]:
-    """ 按版本、类别、获取条件与建造限制筛选合法候选方块 """
+    """ 按版本、类别、获取条件、朝向与建造限制筛选合法候选方块 """
     category_set: Optional[set[str]] = set(categories) if categories else None
     include_set = set(included_ids) if included_ids else None
     exclude_set = set(excluded_ids) if excluded_ids else set()
@@ -182,6 +191,12 @@ def filter_blocks(
             continue
         if max_cost_tier is not None and block.cost_tier > max_cost_tier:
             continue
+        if orientation != "any" and block.orientation != orientation:
+            continue
+        if exclude_transparent and block.transparent:
+            continue
+        if exclude_gravity and block.gravity:
+            continue
         if include_set is not None and block.block_id not in include_set:
             continue
         if block.block_id in exclude_set:
@@ -198,6 +213,9 @@ def block_rejection_reason(
     obtainability: str = "any",
     buildable_only: bool = True,
     max_cost_tier: Optional[int] = None,
+    orientation: str = "any",
+    exclude_transparent: bool = False,
+    exclude_gravity: bool = False,
 ) -> Optional[str]:
     """ 返回方块被排除的结构化原因（用于诊断展示） """
     if edition not in block.editions:
@@ -214,6 +232,12 @@ def block_rejection_reason(
         return "不是完整可建造方块"
     if max_cost_tier is not None and block.cost_tier > max_cost_tier:
         return "超出成本等级上限"
+    if orientation != "any" and block.orientation != orientation:
+        return f"朝向依赖为 {block.orientation}"
+    if exclude_transparent and block.transparent:
+        return "透明方块已排除"
+    if exclude_gravity and block.gravity:
+        return "重力方块已排除"
     return None
 
 
@@ -345,6 +369,36 @@ def load_bead_catalog_csv(path: str) -> tuple[list[BeadColor], list[str]]:
             except Exception as exc:  # 保留行号，跳过坏行
                 errors.append(f"第 {line_number} 行：{exc}")
     return catalog, errors
+
+
+def load_bead_inventory_csv(path: str) -> tuple[dict[str, int], list[str]]:
+    """
+    读取库存 CSV：brand, series, code 必需，quantity 可选（默认 1）。
+    返回 {(brand, series, code): 数量} 与错误列表；数量为 0 的色号视为无库存。
+    """
+    inventory: dict[str, int] = {}
+    errors: list[str] = []
+    with Path(path).open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {"brand", "series", "code"}
+        if not reader.fieldnames or not required.issubset({name.strip() for name in reader.fieldnames}):
+            raise ValueError("库存 CSV 缺少必需列：brand, series, code")
+
+        for line_number, row in enumerate(reader, start=2):
+            try:
+                brand = row["brand"].strip()
+                series = row["series"].strip()
+                code = row["code"].strip()
+                if not brand or not series or not code:
+                    raise ValueError("品牌/系列/色号不能为空")
+                quantity_text = (row.get("quantity") or "1").strip()
+                quantity = int(float(quantity_text))
+                if quantity < 0:
+                    raise ValueError("库存数量不能为负数")
+                inventory[f"bead:{brand}:{series}:{code}"] = quantity
+            except Exception as exc:
+                errors.append(f"第 {line_number} 行：{exc}")
+    return inventory, errors
 
 
 def filter_beads(

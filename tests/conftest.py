@@ -1,8 +1,15 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+from PyQt5.QtCore import QSettings
+
+# 隔离测试使用的 QSettings，避免污染用户界面状态
+_SETTINGS_DIR = tempfile.mkdtemp(prefix="moge-settings-")
+QSettings.setDefaultFormat(QSettings.IniFormat)
+QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, _SETTINGS_DIR)
 
 # 必须在导入 PyQt5 之前设置无界面平台
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

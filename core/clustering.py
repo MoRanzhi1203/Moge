@@ -37,7 +37,14 @@ ALGORITHM_INFO: dict[str, AlgorithmInfo] = {
     "minibatch_rgb": AlgorithmInfo("minibatch_rgb", "MiniBatch K-Means (RGB)", "rgb", "大图快速预览"),
     "minibatch_lab": AlgorithmInfo("minibatch_lab", "MiniBatch K-Means (Lab)", "lab", "快速且感知友好"),
     "ward_lab": AlgorithmInfo("ward_lab", "Ward 合并 (Lab)", "lab", "代表点层次合并，色块更整齐"),
+    "spectral_lab": AlgorithmInfo(
+        "spectral_lab", "谱聚类区域 (实验)", "lab", "仅限 ≤1024 个网格区域，实验区使用"
+    ),
 }
+
+# 仅在基准实验中启用，不进入正式 UI
+EXPERIMENTAL_ALGORITHMS = {"spectral_lab"}
+SPECTRAL_MAX_NODES = 1024
 
 
 def _subsample(pixels: np.ndarray, limit: int = 50000) -> np.ndarray:
@@ -141,6 +148,48 @@ def _assign(features: np.ndarray, centers: np.ndarray, batch_size: int = 100000)
     return labels
 
 
+def _spectral(features: np.ndarray, k: int, seed: int, neighbors: int = 8):
+    """ 在网格区域图上做归一化谱聚类；只允许小规模节点，避免 N×N 爆炸 """
+    count = len(features)
+    if count > SPECTRAL_MAX_NODES:
+        raise ValueError(f"谱聚类仅支持 ≤{SPECTRAL_MAX_NODES} 个区域，当前 {count}")
+
+    squared = np.sum(features * features, axis=1)
+    distance2 = squared[:, None] + squared[None, :] - 2.0 * features @ features.T
+    np.maximum(distance2, 0.0, out=distance2)
+
+    neighbor_count = min(max(1, neighbors), max(1, count - 1))
+    order = np.argsort(distance2, axis=1)[:, 1:neighbor_count + 1]
+    positive = distance2[distance2 > 0]
+    sigma = float(np.median(positive)) if positive.size else 1.0
+    sigma = max(sigma, 1e-9)
+
+    weights = np.zeros_like(distance2)
+    rows = np.arange(count)[:, None]
+    weights[rows, order] = np.exp(-distance2[rows, order] / (2.0 * sigma))
+    weights = np.maximum(weights, weights.T)
+
+    degree = weights.sum(axis=1)
+    degree[degree == 0] = 1.0
+    inv_sqrt = 1.0 / np.sqrt(degree)
+    laplacian = np.eye(count) - (inv_sqrt[:, None] * weights * inv_sqrt[None, :])
+
+    _values, vectors = np.linalg.eigh(laplacian)
+    embedding = vectors[:, 1:k + 1]
+    norms = np.linalg.norm(embedding, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    embedding = embedding / norms
+
+    _centers, labels = _kmeans_once(embedding.astype(np.float32), k, seed)
+    centers = np.stack(
+        [
+            features[labels == index].mean(axis=0) if np.any(labels == index) else features.mean(axis=0)
+            for index in range(k)
+        ]
+    )
+    return centers.astype(np.float32), labels
+
+
 def quantize(
     pixels: np.ndarray,
     target_colors: int,
@@ -178,12 +227,23 @@ def quantize(
     if algorithm.startswith("minibatch"):
         centers, _ = _minibatch(features, k, seed)
         iterations = 20
+        fallback = False
     elif algorithm == "ward_lab":
         centers, _ = _ward(features, k, seed)
+        iterations = 0
+        fallback = False
+    elif algorithm == "spectral_lab":
+        if len(features) > SPECTRAL_MAX_NODES:
+            centers, _ = _kmeans_once(features, k, seed)
+            fallback = True
+        else:
+            centers, _ = _spectral(features, k, seed)
+            fallback = False
         iterations = 0
     else:
         centers, _ = _kmeans_once(features, k, seed)
         iterations = 20
+        fallback = False
 
     if should_cancel is not None and should_cancel():
         raise ProcessingCancelled()
@@ -203,6 +263,7 @@ def quantize(
         "sample_size": float(len(sample)),
         "space": space,
         "iterations": float(iterations),
+        "spectral_fallback": float(fallback),
     }
     return ClusterOutput(centers_rgb=centers_rgb, labels=labels, diagnostics=diagnostics)
 
