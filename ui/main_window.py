@@ -2,6 +2,7 @@
 # ui/main_window.py - Moge 2.0 三模式工作台
 ##############################
 
+import colorsys
 from collections import deque
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -27,6 +30,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -37,7 +41,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from Moge.core.clustering import ALGORITHM_INFO
+from Moge.core.clustering import ALGORITHM_INFO, EXPERIMENTAL_ALGORITHMS
 from Moge.core.grid import isolated_cells, render_grid
 from Moge.core.materials import (
     BEAD_CATALOG,
@@ -46,6 +50,7 @@ from Moge.core.materials import (
     BeadColor,
     board_partitions,
     load_bead_catalog_csv,
+    load_bead_inventory_csv,
     load_resource_pack_zip,
 )
 from Moge.core.models import GridSpec, RenderResult
@@ -82,7 +87,10 @@ class MainWindow(QMainWindow):
         self.undo_stack = {mode: [] for mode, _ in registry.mode_options()}
         self.redo_stack = {mode: [] for mode, _ in registry.mode_options()}
         self.bead_catalog = list(BEAD_CATALOG)
+        self.bead_inventory_map = {}
         self.mc_texture_overrides = {}
+        self.mc_texture_pack_name = ""
+        self._palette_building = False
         self.selected_entry = 0
         self.tool = "paint"
         self._stroke_pending = False
@@ -105,7 +113,15 @@ class MainWindow(QMainWindow):
     # ---------- UI ---------- #
     def _build_ui(self):
         self.setWindowTitle("墨格 Moge 2.0 - 像素艺术工作台")
-        self.setGeometry(100, 100, 1200, 800)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(1200, max(920, int(available.width() * 0.9)))
+            height = min(800, max(560, int(available.height() * 0.9)))
+        else:
+            width, height = 1200, 800
+        self.setGeometry(100, 100, width, height)
+        self.setMinimumSize(820, 560)
         self.setAcceptDrops(True)
 
         central = QWidget()
@@ -119,8 +135,10 @@ class MainWindow(QMainWindow):
         left_content = QWidget()
         left_layout = QVBoxLayout(left_content)
 
-        grid_group = QGroupBox("网格")
+        grid_group = QGroupBox("基础设置")
+        grid_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         grid_form = QFormLayout(grid_group)
+        grid_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.grid_width = QSpinBox()
         self.grid_width.setRange(4, 256)
         self.grid_width.setValue(64)
@@ -135,6 +153,7 @@ class MainWindow(QMainWindow):
         self.mode_stack.addWidget(self._build_pixel_panel())
         self.mode_stack.addWidget(self._build_minecraft_panel())
         self.mode_stack.addWidget(self._build_beads_panel())
+        self._configure_form_controls()
         left_layout.addWidget(self.mode_stack, 1)
 
         self.btn_apply = QPushButton("执行处理")
@@ -143,28 +162,36 @@ class MainWindow(QMainWindow):
 
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         left_scroll.setWidget(left_content)
-        left_scroll.setMinimumWidth(280)
+        left_scroll.setMinimumWidth(300)
+        left_scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.left_scroll = left_scroll
+        self.left_content = left_content
         self.splitter.addWidget(left_scroll)
 
         # 中央画布
         self.canvas = GridCanvas()
+        self.canvas.setMinimumWidth(280)
         self.splitter.addWidget(self.canvas)
 
         # 右侧：调色板 + 统计
-        right_tabs = QTabWidget()
-        self.palette_list = QListWidget()
-        self.palette_list.setIconSize(QSize(18, 18))
-        right_tabs.addTab(self.palette_list, "调色板")
+        self.right_tabs = QTabWidget()
+        self.right_tabs.addTab(self._build_palette_tab(), "调色板")
         self.stats_view = QTextBrowser()
-        right_tabs.addTab(self.stats_view, "统计")
-        right_tabs.setMinimumWidth(240)
-        self.splitter.addWidget(right_tabs)
+        self.stats_view.setLineWrapMode(QTextBrowser.WidgetWidth)
+        self.stats_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.right_tabs.addTab(self.stats_view, "统计")
+        self.right_tabs.setMinimumWidth(220)
+        self.splitter.addWidget(self.right_tabs)
 
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setStretchFactor(2, 0)
-        self.splitter.setSizes([300, 720, 260])
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(2, False)
+        self.splitter.setSizes([300, 760, 260])
         outer.addWidget(self.splitter)
 
         # 状态栏
@@ -188,24 +215,76 @@ class MainWindow(QMainWindow):
         status.addPermanentWidget(self.progress)
         status.addPermanentWidget(self.btn_cancel)
 
+    def _build_palette_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        self.palette_search = QLineEdit()
+        self.palette_search.setPlaceholderText("搜索颜色 / 方块 / 色号")
+        self.palette_search.setClearButtonEnabled(True)
+        layout.addWidget(self.palette_search)
+
+        filter_row = QHBoxLayout()
+        self.palette_sort = QComboBox()
+        self.palette_sort.addItem("用量降序", "count")
+        self.palette_sort.addItem("名称", "name")
+        self.palette_sort.addItem("色相", "hue")
+        self.palette_used_only = QCheckBox("仅已用")
+        filter_row.addWidget(self.palette_sort, 1)
+        filter_row.addWidget(self.palette_used_only)
+        layout.addLayout(filter_row)
+
+        self.palette_list = QListWidget()
+        self.palette_list.setIconSize(QSize(18, 18))
+        self.palette_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.palette_list.setTextElideMode(Qt.ElideRight)
+        self.palette_list.setUniformItemSizes(True)
+        self.palette_list.setWordWrap(False)
+        self.palette_list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        layout.addWidget(self.palette_list, 1)
+        return tab
+
+    def _configure_form_controls(self):
+        """ 统一收缩输入控件的最小宽度，避免窄侧栏被长选项文本撑破 """
+        for child in self.mode_stack.findChildren(QWidget):
+            if isinstance(child, (QComboBox, QSpinBox, QDoubleSpinBox)):
+                child.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                child.setMinimumWidth(60)
+            if isinstance(child, QComboBox):
+                child.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                child.setMinimumContentsLength(6)
+
     def _build_pixel_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        params = QGroupBox("像素化参数")
-        form = QFormLayout(params)
+        mode_group = QGroupBox("模式设置")
+        mode_form = QFormLayout(mode_group)
+        mode_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.px_sampling = QComboBox()
         for key, label in pixel_mode.SAMPLING_OPTIONS:
             self.px_sampling.addItem(label, key)
-        self.px_algorithm = QComboBox()
-        for key, info in ALGORITHM_INFO.items():
-            self.px_algorithm.addItem(info.label, key)
         self.px_colors = QSpinBox()
         self.px_colors.setRange(2, 256)
         self.px_colors.setValue(16)
         self.px_preset = QComboBox()
         for key, label in pixel_mode.PRESET_OPTIONS:
             self.px_preset.addItem(label, key)
+        mode_form.addRow("采样方式:", self.px_sampling)
+        mode_form.addRow("目标颜色数:", self.px_colors)
+        mode_form.addRow("效果预设:", self.px_preset)
+        layout.addWidget(mode_group)
+
+        advanced_group = QGroupBox("高级参数")
+        advanced_form = QFormLayout(advanced_group)
+        advanced_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        self.px_algorithm = QComboBox()
+        for key, info in ALGORITHM_INFO.items():
+            if key in EXPERIMENTAL_ALGORITHMS:
+                continue
+            self.px_algorithm.addItem(info.label, key)
         self.px_seed = QSpinBox()
         self.px_seed.setRange(0, 99999)
         self.px_seed.setValue(42)
@@ -214,15 +293,11 @@ class MainWindow(QMainWindow):
         self.px_max_delta.setRange(0.0, 30.0)
         self.px_max_delta.setSingleStep(0.5)
         self.px_max_delta.setValue(6.0)
-
-        form.addRow("采样方式:", self.px_sampling)
-        form.addRow("量化算法:", self.px_algorithm)
-        form.addRow("目标颜色数:", self.px_colors)
-        form.addRow("效果预设:", self.px_preset)
-        form.addRow("随机种子:", self.px_seed)
-        form.addRow("", self.px_optimize)
-        form.addRow("合并色差上限:", self.px_max_delta)
-        layout.addWidget(params)
+        advanced_form.addRow("量化算法:", self.px_algorithm)
+        advanced_form.addRow("随机种子:", self.px_seed)
+        advanced_form.addRow("", self.px_optimize)
+        advanced_form.addRow("合并色差上限:", self.px_max_delta)
+        layout.addWidget(advanced_group)
 
         self.px_algorithm_note = QLabel("算法与预设会被展开为可检查参数；自动选择基于透明规则。")
         self.px_algorithm_note.setWordWrap(True)
@@ -234,8 +309,10 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        params = QGroupBox("Minecraft 筛选")
-        form = QFormLayout(params)
+        mode_group = QGroupBox("模式设置")
+        mode_layout = QVBoxLayout(mode_group)
+        mode_form = QFormLayout()
+        mode_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.mc_edition = QComboBox()
         self.mc_edition.addItem("Java 版", "java")
         self.mc_edition.addItem("基岩版", "bedrock")
@@ -246,41 +323,61 @@ class MainWindow(QMainWindow):
         self.mc_obtain = QComboBox()
         for key, label in minecraft_mode.OBTAINABILITY_OPTIONS:
             self.mc_obtain.addItem(label, key)
-        self.mc_cost = QComboBox()
-        for key, label in minecraft_mode.COST_OPTIONS:
-            self.mc_cost.addItem(label, key)
-        self.mc_buildable = QCheckBox("仅完整可建造方块")
-        self.mc_buildable.setChecked(True)
+        mode_form.addRow("版本:", self.mc_edition)
+        mode_form.addRow("精确版本:", self.mc_version)
+        mode_form.addRow("获取条件:", self.mc_obtain)
+        mode_layout.addLayout(mode_form)
 
-        form.addRow("版本:", self.mc_edition)
-        form.addRow("精确版本:", self.mc_version)
-        form.addRow("获取条件:", self.mc_obtain)
-        form.addRow("成本偏好:", self.mc_cost)
-        form.addRow("", self.mc_buildable)
-        layout.addWidget(params)
-
-        category_group = QGroupBox("材质类别（不选=全部）")
-        category_layout = QVBoxLayout(category_group)
+        mode_layout.addWidget(QLabel("材质类别（不选=全部）"))
         self.mc_categories = QListWidget()
         self.mc_categories.setMaximumHeight(150)
+        self.mc_categories.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.mc_categories.setTextElideMode(Qt.ElideRight)
+        self.mc_categories.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         for key, label in MC_CATEGORIES.items():
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, key)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
             self.mc_categories.addItem(item)
-        category_layout.addWidget(self.mc_categories)
-        layout.addWidget(category_group)
+        mode_layout.addWidget(self.mc_categories)
+        layout.addWidget(mode_group)
 
-        note = QLabel(minecraft_mode.DISPLAY_NOTE)
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        advanced_group = QGroupBox("高级参数")
+        advanced_layout = QVBoxLayout(advanced_group)
+        advanced_form = QFormLayout()
+        advanced_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        self.mc_buildable = QCheckBox("仅完整可建造方块")
+        self.mc_buildable.setChecked(True)
+        self.mc_cost = QComboBox()
+        for key, label in minecraft_mode.COST_OPTIONS:
+            self.mc_cost.addItem(label, key)
+        self.mc_orientation = QComboBox()
+        self.mc_orientation.addItem("不限制朝向", "any")
+        self.mc_orientation.addItem("无朝向依赖", "none")
+        self.mc_orientation.addItem("轴向依赖", "axis")
+        self.mc_orientation.addItem("朝向依赖", "facing")
+        self.mc_exclude_transparent = QCheckBox("排除透明方块")
+        self.mc_exclude_gravity = QCheckBox("排除重力方块")
+        advanced_form.addRow("成本偏好:", self.mc_cost)
+        advanced_form.addRow("", self.mc_buildable)
+        advanced_form.addRow("朝向:", self.mc_orientation)
+        advanced_form.addRow("", self.mc_exclude_transparent)
+        advanced_form.addRow("", self.mc_exclude_gravity)
+        advanced_layout.addLayout(advanced_form)
 
         self.btn_import_pack = QPushButton("导入资源包 ZIP...")
         self.mc_pack_note = QLabel("未加载用户资源包")
         self.mc_pack_note.setWordWrap(True)
-        layout.addWidget(self.btn_import_pack)
-        layout.addWidget(self.mc_pack_note)
+        self.btn_mc_diagnose = QPushButton("筛选诊断")
+        advanced_layout.addWidget(self.btn_import_pack)
+        advanced_layout.addWidget(self.mc_pack_note)
+        advanced_layout.addWidget(self.btn_mc_diagnose)
+        layout.addWidget(advanced_group)
+
+        note = QLabel(minecraft_mode.DISPLAY_NOTE)
+        note.setWordWrap(True)
+        layout.addWidget(note)
         layout.addStretch(1)
         return panel
 
@@ -288,36 +385,47 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        catalog_group = QGroupBox("色卡")
-        form = QFormLayout(catalog_group)
+        mode_group = QGroupBox("模式设置")
+        form = QFormLayout(mode_group)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.bead_brand = QComboBox()
         self.bead_series = QComboBox()
         self.btn_import_beads = QPushButton("导入色卡 CSV...")
         self.bead_catalog_note = QLabel("内置近似色卡，未验证")
         self.bead_catalog_note.setWordWrap(True)
-        form.addRow("品牌:", self.bead_brand)
-        form.addRow("系列:", self.bead_series)
-        form.addRow("", self.btn_import_beads)
-        form.addRow("", self.bead_catalog_note)
-        layout.addWidget(catalog_group)
-
-        filter_group = QGroupBox("库存与限制")
-        filter_form = QFormLayout(filter_group)
         self.bead_inventory = QLineEdit()
         self.bead_inventory.setPlaceholderText("库存色号，逗号分隔；留空=全部")
         self.bead_disabled = QLineEdit()
         self.bead_disabled.setPlaceholderText("禁用色号，逗号分隔")
+        form.addRow("品牌:", self.bead_brand)
+        form.addRow("系列:", self.bead_series)
+        form.addRow("", self.btn_import_beads)
+        form.addRow("", self.bead_catalog_note)
+        form.addRow("库存:", self.bead_inventory)
+        form.addRow("禁用:", self.bead_disabled)
+        layout.addWidget(mode_group)
+
+        advanced_group = QGroupBox("高级参数")
+        advanced_form = QFormLayout(advanced_group)
+        advanced_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.bead_board_width = QSpinBox()
         self.bead_board_width.setRange(1, 128)
         self.bead_board_width.setValue(29)
         self.bead_board_height = QSpinBox()
         self.bead_board_height.setRange(1, 128)
         self.bead_board_height.setValue(29)
-        filter_form.addRow("库存:", self.bead_inventory)
-        filter_form.addRow("禁用:", self.bead_disabled)
-        filter_form.addRow("底板宽:", self.bead_board_width)
-        filter_form.addRow("底板高:", self.bead_board_height)
-        layout.addWidget(filter_group)
+        self.bead_pack_size = QSpinBox()
+        self.bead_pack_size.setRange(1, 100000)
+        self.bead_pack_size.setValue(1000)
+        self.btn_import_inventory = QPushButton("导入库存 CSV...")
+        self.bead_inventory_note = QLabel("未导入库存")
+        self.bead_inventory_note.setWordWrap(True)
+        advanced_form.addRow("底板宽:", self.bead_board_width)
+        advanced_form.addRow("底板高:", self.bead_board_height)
+        advanced_form.addRow("每包数量:", self.bead_pack_size)
+        advanced_form.addRow("", self.btn_import_inventory)
+        advanced_form.addRow("", self.bead_inventory_note)
+        layout.addWidget(advanced_group)
 
         note = QLabel(beads_mode.DISPLAY_NOTE)
         note.setWordWrap(True)
@@ -361,7 +469,21 @@ class MainWindow(QMainWindow):
         self.act_grid.setChecked(True)
         self.act_grid.setShortcut(QKeySequence("Ctrl+G"))
         self.act_theme = QAction("切换主题", self)
-        toolbar.addActions([self.act_fit, self.act_grid, self.act_theme])
+        self.act_compare = QAction("对比原图", self)
+        self.act_compare.setCheckable(True)
+        self.act_compare.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.act_compare.setEnabled(False)
+        self.act_reset_view = QAction("重置视图", self)
+        self.act_reset_view.setShortcut(QKeySequence("Ctrl+0"))
+        self.act_locate = QAction("定位坐标...", self)
+        self.act_locate.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self.act_sidebar = QAction("显示侧栏", self)
+        self.act_sidebar.setCheckable(True)
+        self.act_sidebar.setChecked(True)
+        self.act_sidebar.setShortcut(QKeySequence("Ctrl+B"))
+        toolbar.addActions([
+            self.act_fit, self.act_reset_view, self.act_compare, self.act_grid, self.act_theme, self.act_sidebar,
+        ])
 
         file_menu = self.menuBar().addMenu("文件")
         file_menu.addAction(self.act_open)
@@ -400,7 +522,9 @@ class MainWindow(QMainWindow):
         self.tool_actions["paint"].setChecked(True)
 
         view_menu = self.menuBar().addMenu("视图")
-        view_menu.addActions([self.act_fit, self.act_grid, self.act_theme])
+        view_menu.addActions([
+            self.act_fit, self.act_reset_view, self.act_compare, self.act_grid, self.act_sidebar, self.act_theme,
+        ])
 
         help_menu = self.menuBar().addMenu("帮助")
         act_about = QAction("关于 Moge", self)
@@ -426,13 +550,19 @@ class MainWindow(QMainWindow):
         self._connect_action(self.act_undo, self.undo)
         self._connect_action(self.act_redo, self.redo)
         self._connect_action(self.act_fit, self.canvas_fit)
+        self._connect_action(self.act_reset_view, self.canvas.reset_view)
+        self._connect_action(self.act_locate, self.locate_cell)
         self._connect_action(self.act_theme, self.toggle_theme)
         self._connect_action(act_quit, self.close)
         self._connect_action(act_about, self.show_about)
         self.act_grid.toggled.connect(self.canvas.set_grid_visible)
+        self.act_compare.toggled.connect(self.canvas.set_compare_enabled)
+        self.act_sidebar.toggled.connect(self._set_sidebar_visible)
         self.tool_group.triggered.connect(self._on_tool_changed)
         self.btn_import_beads.clicked.connect(self.import_bead_catalog)
         self.btn_import_pack.clicked.connect(self.import_minecraft_pack)
+        self.btn_import_inventory.clicked.connect(self.import_bead_inventory)
+        self.btn_mc_diagnose.clicked.connect(self.show_mc_diagnostics)
         self.btn_cancel.clicked.connect(self.cancel_task)
 
     def _connect_action(self, action, function):
@@ -446,7 +576,11 @@ class MainWindow(QMainWindow):
         self.canvas.hoverCellChanged.connect(self._on_hover)
         self.canvas.zoomChanged.connect(self._on_zoom)
         self.palette_list.currentRowChanged.connect(self._on_palette_selected)
+        self.palette_search.textChanged.connect(lambda _text: self._refresh_palette())
+        self.palette_sort.currentIndexChanged.connect(lambda _index: self._refresh_palette())
+        self.palette_used_only.toggled.connect(lambda _checked: self._refresh_palette())
         self.bead_brand.currentIndexChanged.connect(self._on_bead_brand_changed)
+        self.bead_inventory.textEdited.connect(lambda _text: self.bead_inventory_map.clear())
         self.grid_width.valueChanged.connect(lambda _value: self._update_status())
         self.grid_height.valueChanged.connect(lambda _value: self._update_status())
         self.btn_apply.clicked.connect(self.apply_processing)
@@ -461,6 +595,9 @@ class MainWindow(QMainWindow):
         self.mode_settings[self.mode] = self._collect_settings(self.mode)
         self.mode = self.mode_combo.itemData(index)
         self.mode_stack.setCurrentIndex(index)
+        self.palette_used_only.blockSignals(True)
+        self.palette_used_only.setChecked(self.mode == "beads")
+        self.palette_used_only.blockSignals(False)
         self._apply_settings_to_panels(self.mode, self.mode_settings[self.mode])
         result = self.results.get(self.mode)
         if result is not None:
@@ -501,16 +638,25 @@ class MainWindow(QMainWindow):
                 "max_cost_tier": self.mc_cost.currentData(),
                 "included_ids": [],
                 "excluded_ids": [],
+                "orientation": self.mc_orientation.currentData(),
+                "exclude_transparent": self.mc_exclude_transparent.isChecked(),
+                "exclude_gravity": self.mc_exclude_gravity.isChecked(),
                 "texture_overrides": dict(self.mc_texture_overrides),
+                "texture_pack_name": self.mc_texture_pack_name,
             }
+        if self.bead_inventory_map:
+            inventory_ids = [item_id for item_id, quantity in self.bead_inventory_map.items() if quantity > 0]
+        else:
+            inventory_ids = [item.strip() for item in self.bead_inventory.text().split(",") if item.strip()] or None
         return {
             "brand": self.bead_brand.currentData(),
             "series": self.bead_series.currentData(),
             "catalog": list(self.bead_catalog),
-            "inventory_ids": [item.strip() for item in self.bead_inventory.text().split(",") if item.strip()] or None,
+            "inventory_ids": inventory_ids,
             "disabled_ids": [item.strip() for item in self.bead_disabled.text().split(",") if item.strip()],
             "board_width": self.bead_board_width.value(),
             "board_height": self.bead_board_height.value(),
+            "pack_size": self.bead_pack_size.value(),
         }
 
     def _apply_settings_to_panels(self, mode: str, settings: dict):
@@ -537,10 +683,15 @@ class MainWindow(QMainWindow):
                 str(block_id): tuple(int(channel) for channel in rgb)
                 for block_id, rgb in overrides.items()
             }
+            self.mc_texture_pack_name = str(settings.get("texture_pack_name") or "")
             if self.mc_texture_overrides:
-                self.mc_pack_note.setText(f"已加载用户资源包贴图 {len(self.mc_texture_overrides)} 个（平均色）")
+                name = self.mc_texture_pack_name or "用户资源包"
+                self.mc_pack_note.setText(f"已加载 {name} 的 {len(self.mc_texture_overrides)} 个方块贴图（平均色）")
             else:
-                self.mc_pack_note.setText("未加载用户资源包")
+                self.mc_pack_note.setText("未加载用户资源包（仅为内置近似色）")
+            self._set_combo_data(self.mc_orientation, settings.get("orientation", "any"))
+            self.mc_exclude_transparent.setChecked(bool(settings.get("exclude_transparent", False)))
+            self.mc_exclude_gravity.setChecked(bool(settings.get("exclude_gravity", False)))
         else:
             catalog = settings.get("catalog")
             if catalog:
@@ -569,11 +720,12 @@ class MainWindow(QMainWindow):
             self._on_bead_brand_changed()
             self._set_combo_data(self.bead_series, settings.get("series"))
             inventory = settings.get("inventory_ids") or []
-            self.bead_inventory.setText(", ".join(inventory))
+            self.bead_inventory.setText(", ".join(item_id.split(":")[-1] for item_id in inventory))
             disabled = settings.get("disabled_ids") or []
             self.bead_disabled.setText(", ".join(disabled))
             self.bead_board_width.setValue(int(settings.get("board_width", 29)))
             self.bead_board_height.setValue(int(settings.get("board_height", 29)))
+            self.bead_pack_size.setValue(int(settings.get("pack_size", 1000)))
 
     @staticmethod
     def _set_combo_data(combo: QComboBox, value):
@@ -617,6 +769,12 @@ class MainWindow(QMainWindow):
         self.grid_height.setValue(grid_height)
 
         self._display_source()
+        self.canvas.set_reference_image(self.original_img)
+        self.act_compare.blockSignals(True)
+        self.act_compare.setChecked(False)
+        self.act_compare.blockSignals(False)
+        self.act_compare.setEnabled(True)
+        self.canvas.set_compare_enabled(False)
         self._refresh_palette()
         self._refresh_stats()
         self._update_status()
@@ -648,6 +806,10 @@ class MainWindow(QMainWindow):
             result = self._result_from_grid(document.grid, settings)
             self.results[mode] = result
             self._display_result(result)
+            if self.original_img is None:
+                self.canvas.set_reference_image(None)
+                self.act_compare.setChecked(False)
+                self.act_compare.setEnabled(False)
             self.lbl_status.setText(f"已打开工程 {Path(path).name}")
         except Exception as exc:
             logger.error("打开工程失败", exc_info=True)
@@ -728,11 +890,60 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"资源包读取失败：{exc}")
             return
         self.mc_texture_overrides = dict(pack.overrides)
+        self.mc_texture_pack_name = pack.pack_name
         self.mc_pack_note.setText(
-            f"已加载 {pack.loaded} 个方块贴图（平均色），跳过 {pack.skipped}"
+            f"已加载 {pack.pack_name} 的 {pack.loaded} 个方块贴图（平均色），跳过 {pack.skipped}"
         )
         self.lbl_status.setText(f"已导入资源包：{pack.pack_name}（{pack.loaded} 个方块）")
         logger.info("导入资源包：%s，覆盖 %s 个方块", path, pack.loaded)
+
+    def import_bead_inventory(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入拼豆库存", "", "CSV 文件 (*.csv)")
+        if not path:
+            return
+        try:
+            inventory, errors = load_bead_inventory_csv(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "错误", f"库存读取失败：{exc}")
+            return
+        self.bead_inventory_map = inventory
+        codes = [item_id.split(":")[-1] for item_id, quantity in inventory.items() if quantity > 0]
+        self.bead_inventory.setText(", ".join(codes))
+        total = sum(inventory.values())
+        note = f"已导入 {len(inventory)} 个色号，共 {total} 颗"
+        if errors:
+            note += f"，跳过 {len(errors)} 行"
+        self.bead_inventory_note.setText(note)
+        self.lbl_status.setText(note)
+
+    def show_mc_diagnostics(self):
+        settings = self._collect_settings("minecraft")
+        try:
+            candidates = minecraft_mode.candidate_blocks(settings)
+        except Exception as exc:
+            QMessageBox.warning(self, "参数错误", str(exc))
+            return
+        reasons = minecraft_mode.rejection_diagnostics(settings)
+        excluded = {block_id: reason for block_id, reason in reasons.items() if reason}
+        category_counts = {}
+        for block in candidates:
+            label = MC_CATEGORIES.get(block.category, block.category)
+            category_counts[label] = category_counts.get(label, 0) + 1
+
+        lines = [
+            "<h3>筛选诊断</h3>",
+            f"<p>版本 {settings.get('edition')} {settings.get('version')} · "
+            f"候选 <b>{len(candidates)}</b> / {len(reasons)} 个方块</p>",
+            "<h4>候选类别</h4><ul>",
+        ]
+        for label, count in sorted(category_counts.items()):
+            lines.append(f"<li>{label}：{count}</li>")
+        lines.append("</ul><h4>排除原因（前 30 条）</h4><ul>")
+        for block_id, reason in list(excluded.items())[:30]:
+            lines.append(f"<li>{block_id}：{reason}</li>")
+        lines.append("</ul>")
+        self.stats_view.setHtml("".join(lines))
+        self.right_tabs.setCurrentIndex(1)
 
     def import_bead_catalog(self):
         path, _ = QFileDialog.getOpenFileName(self, "导入拼豆色卡", "", "CSV 文件 (*.csv)")
@@ -865,28 +1076,68 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _refresh_palette(self):
+        if self._palette_building:
+            return
+        self._palette_building = True
         self.palette_list.blockSignals(True)
         self.palette_list.clear()
         result = self._current_result()
         if result is None:
             self.palette_list.blockSignals(False)
+            self._palette_building = False
             return
 
         counts = result.stats.get("counts", {})
+        query = self.palette_search.text().strip().lower()
+        used_only = self.palette_used_only.isChecked()
+        sort_key = self.palette_sort.currentData()
+
+        rows = []
         for index, entry in enumerate(result.grid.entries):
+            count = int(counts.get(entry.id, 0))
+            if used_only and count <= 0:
+                continue
+            searchable = f"{entry.name} {entry.id} {entry.meta.get('code', '')}".lower()
+            if query and query not in searchable:
+                continue
+            red, green, blue = (channel / 255.0 for channel in entry.rgb)
+            hue = colorsys.rgb_to_hsv(red, green, blue)[0]
+            rows.append((index, entry, count, hue))
+
+        if sort_key == "name":
+            rows.sort(key=lambda row: row[1].name)
+        elif sort_key == "hue":
+            rows.sort(key=lambda row: (row[3], row[1].name))
+        else:
+            rows.sort(key=lambda row: (-row[2], row[1].name))
+
+        for index, entry, count, _hue in rows:
             pixmap = QPixmap(16, 16)
             pixmap.fill(QColor(*entry.rgb))
-            item = QListWidgetItem(QIcon(pixmap), f"{entry.name}  ×{int(counts.get(entry.id, 0))}")
+            label = entry.name
+            if result.mode == "minecraft":
+                label += " [贴图]" if entry.meta.get("texture") == "user-average" else " [近似]"
+            elif result.mode == "beads":
+                label = f"{entry.meta.get('code', '')} {entry.name}"
+            item = QListWidgetItem(QIcon(pixmap), f"{label}  ×{count}")
             item.setData(Qt.UserRole, index)
+            item.setToolTip(f"{entry.name}\n{entry.id}\n用量 {count}")
             self.palette_list.addItem(item)
-        self.selected_entry = min(max(self.selected_entry, 0), max(0, self.palette_list.count() - 1))
-        if self.palette_list.count():
-            self.palette_list.setCurrentRow(self.selected_entry)
+
+        visible_indices = [row[0] for row in rows]
+        if visible_indices:
+            if self.selected_entry not in visible_indices:
+                self.selected_entry = visible_indices[0]
+            target_row = visible_indices.index(self.selected_entry)
+            self.palette_list.setCurrentRow(target_row)
         self.palette_list.blockSignals(False)
+        self._palette_building = False
 
     def _on_palette_selected(self, row):
-        if row >= 0:
-            self.selected_entry = row
+        if row >= 0 and not self._palette_building:
+            item = self.palette_list.item(row)
+            if item is not None:
+                self.selected_entry = int(item.data(Qt.UserRole))
 
     def _refresh_stats(self):
         result = self._current_result()
@@ -915,6 +1166,8 @@ class MainWindow(QMainWindow):
                 f"<b>候选方块</b>：{stats.get('candidate_blocks')}<br>"
                 f"<b>方块种类</b>：{stats.get('block_types')}<br>"
                 f"<b>合法率</b>：{stats.get('legal_rate', 0) * 100:.1f}%<br>"
+                f"<b>贴图覆盖</b>：{stats.get('texture_overrides', 0)}"
+                f"（{stats.get('texture_pack') or '无资源包'}）<br>"
                 f"<b>ΔE00 均值 / P95</b>：{stats.get('mean_delta_e00', 0):.2f} / {stats.get('p95_delta_e00', 0):.2f}</p>"
             )
         elif result.mode == "beads":
@@ -923,6 +1176,8 @@ class MainWindow(QMainWindow):
                 f"<b>总珠子</b>：{stats.get('total_beads')}<br>"
                 f"<b>使用颜色</b>：{stats.get('used_colors')}<br>"
                 f"<b>底板</b>：{stats.get('boards')} 块（{stats.get('board_size')}）<br>"
+                f"<b>采购包数</b>：{stats.get('packs_required', 0)} 包"
+                f"（每包 {stats.get('pack_size', 0)}）<br>"
                 f"<b>色卡已验证</b>：{'是' if stats.get('verified_catalog') else '否'}</p>"
             )
         if stats.get("note"):
@@ -1093,6 +1348,11 @@ class MainWindow(QMainWindow):
             result.stats["board_stats"] = board_stats
             result.stats["total_beads"] = int(valid.size)
             result.stats["used_colors"] = int(len(values))
+            pack_size = max(1, int(settings.get("pack_size", 1000)))
+            result.stats["pack_size"] = pack_size
+            result.stats["packs_required"] = sum(
+                (int(count) + pack_size - 1) // pack_size for count in counts
+            )
         self.canvas.set_image(result.image, (result.grid.spec.width, result.grid.spec.height))
         self._refresh_palette()
         self._refresh_stats()
@@ -1120,6 +1380,25 @@ class MainWindow(QMainWindow):
     # ---------- 主题/视图 ---------- #
     def canvas_fit(self):
         self.canvas.fit_to_view()
+
+    def _set_sidebar_visible(self, visible: bool):
+        self.right_tabs.setVisible(bool(visible))
+
+    def locate_cell(self):
+        text, accepted = QInputDialog.getText(self, "定位坐标", "输入 x,y（从 0 开始）：", text="0,0")
+        if not accepted:
+            return
+        try:
+            col_text, row_text = text.replace("，", ",").split(",", 1)
+            col, row = int(col_text.strip()), int(row_text.strip())
+            if col < 0 or row < 0:
+                raise ValueError
+        except Exception:
+            QMessageBox.warning(self, "参数错误", "坐标格式应为 x,y，例如 12,8")
+            return
+        self.canvas.center_on_cell(col, row)
+        self.lbl_hover.setText(f"({col}, {row})")
+        self.lbl_status.setText(f"已定位到 ({col}, {row})")
 
     def toggle_theme(self):
         self._theme = "light" if self._theme == "dark" else "dark"
@@ -1153,6 +1432,15 @@ class MainWindow(QMainWindow):
         state = self.settings.value("splitter_state")
         if state:
             self.splitter.restoreState(state)
+        sizes = self.splitter.sizes()
+        if len(sizes) == 3 and self.act_sidebar.isChecked():
+            if sizes[0] < 300:
+                sizes[0] = 300
+            if sizes[2] < 220:
+                sizes[2] = 220
+            self.splitter.setSizes(sizes)
+        if not self.settings.value("sidebar_visible", True, type=bool):
+            self.act_sidebar.setChecked(False)
         mode = self.settings.value("mode", "pixel")
         index = self.mode_combo.findData(mode)
         if index >= 0:
@@ -1185,7 +1473,12 @@ class MainWindow(QMainWindow):
         self.bead_series.clear()
         for item in series:
             self.bead_series.addItem(item, item)
-        self.bead_catalog_note.setText(f"内置近似色卡：{len(self.bead_catalog)} 色（未验证）")
+        verified = all(item.verified for item in self.bead_catalog)
+        imported = any(item.source.startswith("user") for item in self.bead_catalog)
+        source_label = "用户导入" if imported else "内置近似"
+        self.bead_catalog_note.setText(
+            f"{source_label}色卡：{len(self.bead_catalog)} 色（{'已验证标记' if verified else '未验证'}）"
+        )
 
     def _on_bead_brand_changed(self):
         brand = self.bead_brand.currentData()
@@ -1219,6 +1512,11 @@ class MainWindow(QMainWindow):
         if grid.mode == "beads":
             stats["used_colors"] = stats["used_entries"]
             stats["total_beads"] = stats["filled_cells"]
+            pack_size = max(1, int(settings.get("pack_size", 1000)))
+            stats["pack_size"] = pack_size
+            stats["packs_required"] = sum(
+                (count + pack_size - 1) // pack_size for count in stats["counts"].values()
+            )
         return RenderResult(
             image=image,
             grid=grid,
@@ -1248,6 +1546,7 @@ class MainWindow(QMainWindow):
                 return
         self.settings.setValue("window_geometry", self.saveGeometry())
         self.settings.setValue("splitter_state", self.splitter.saveState())
+        self.settings.setValue("sidebar_visible", self.act_sidebar.isChecked())
         self.settings.setValue("mode", self.mode)
         self.settings.setValue("theme", self._theme)
         super().closeEvent(event)

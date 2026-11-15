@@ -9,6 +9,7 @@ from Moge.core.benchmarks import (
     run_clustering_suite,
     run_material_comparison,
     run_preset_suite,
+    run_spectral_experiment,
     summarize,
 )
 from Moge.core.models import GridSpec
@@ -74,6 +75,21 @@ def test_material_comparison_quick():
 def test_environment_info_has_versions():
     info = environment_info()
     assert info["python"] and info["numpy"] and info["opencv"]
+
+
+def test_spectral_experiment_small_grid():
+    images = {"cartoon": make_benchmark_images(24)["cartoon"]}
+    records = run_spectral_experiment(images, grid_size=8, color_counts=(4,))
+    assert {record["algorithm"] for record in records} == {"kmeans_lab", "spectral_lab"}
+    assert all(record["fallback"] == 0 for record in records)
+
+
+def test_spectral_falls_back_on_large_grid():
+    from Moge.core.clustering import quantize
+
+    pixels = np.random.default_rng(9).integers(0, 256, (4096, 3), dtype=np.uint8)
+    output = quantize(pixels, 8, "spectral_lab", seed=1)
+    assert output.diagnostics["spectral_fallback"] == 1
 
 
 def test_auto_preset_rules_and_ui_options():

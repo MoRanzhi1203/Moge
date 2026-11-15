@@ -29,6 +29,11 @@ MC_DEFAULTS: dict[str, object] = {
     "max_cost_tier": None,
     "included_ids": [],
     "excluded_ids": [],
+    "orientation": "any",
+    "exclude_transparent": False,
+    "exclude_gravity": False,
+    "texture_overrides": {},
+    "texture_pack_name": "",
 }
 
 VERSION_OPTIONS = tuple((version, version) for version in MC_VERSIONS)
@@ -76,6 +81,9 @@ def candidate_blocks(settings: dict[str, object]) -> list[MinecraftBlock]:
         max_cost_tier=int(max_cost) if max_cost is not None else None,
         included_ids=settings.get("included_ids") or None,
         excluded_ids=settings.get("excluded_ids") or None,
+        orientation=str(settings.get("orientation", "any")),
+        exclude_transparent=bool(settings.get("exclude_transparent", False)),
+        exclude_gravity=bool(settings.get("exclude_gravity", False)),
     )
 
 
@@ -117,6 +125,9 @@ def stage_map_materials(context: PipelineContext):
                 "renewable": block.renewable,
                 "cost_tier": block.cost_tier,
                 "transparent": block.transparent,
+                "gravity": block.gravity,
+                "orientation": block.orientation,
+                "visible_face": block.visible_face,
                 "texture": "user-average" if block.block_id in overrides else "approximate",
             },
         )
@@ -156,8 +167,11 @@ def stage_map_materials(context: PipelineContext):
             "mean_delta_e00": float(np.mean(deltas)),
             "p95_delta_e00": float(np.percentile(deltas, 95)),
             "texture_overrides": len(overrides),
+            "texture_pack": settings.get("texture_pack_name") or "",
             "note": DISPLAY_NOTE + (
-                f" 已加载用户资源包贴图 {len(overrides)} 个（使用平均色）。" if overrides else ""
+                f" 已加载用户资源包 {settings.get('texture_pack_name') or ''} 的 {len(overrides)} 个贴图（平均色）。"
+                if overrides
+                else ""
             ),
         }
     )
@@ -180,6 +194,9 @@ def rejection_diagnostics(settings: dict[str, object]) -> dict[str, Optional[str
             str(settings.get("obtainability", "any")),
             bool(settings.get("buildable_only", True)),
             int(max_cost) if max_cost is not None else None,
+            str(settings.get("orientation", "any")),
+            bool(settings.get("exclude_transparent", False)),
+            bool(settings.get("exclude_gravity", False)),
         )
         for block in MC_BLOCKS
     }

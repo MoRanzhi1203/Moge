@@ -22,6 +22,8 @@ class GridCanvas(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._image: Optional[QImage] = None
+        self._reference: Optional[QImage] = None
+        self._show_reference = False
         self._grid = (0, 0)
         self._zoom = 1.0
         self._fit = True
@@ -50,16 +52,39 @@ class GridCanvas(QWidget):
         if array.ndim == 2:
             array = np.stack([array, array, array], axis=-1)
         height, width = array.shape[:2]
-        if array.shape[2] == 4:
-            qimage = QImage(array.data, width, height, array.strides[0], QImage.Format_RGBA8888)
-        else:
-            qimage = QImage(array.data, width, height, array.strides[0], QImage.Format_RGB888)
-        self._image = qimage.copy()
+        self._image = self._to_qimage(array)
         self._grid = grid if grid else (width, height)
         self.update()
 
     def image(self) -> Optional[QImage]:
         return self._image
+
+    def set_reference_image(self, image: Optional[np.ndarray]):
+        """ 设置对比原图；与结果图分开保存，缩放不触发任何量化 """
+        self._reference = self._to_qimage(image)
+        if self._reference is None:
+            self._show_reference = False
+        self.update()
+
+    def set_compare_enabled(self, enabled: bool):
+        self._show_reference = bool(enabled and self._reference is not None)
+        self.update()
+
+    def compare_enabled(self) -> bool:
+        return self._show_reference
+
+    def _to_qimage(self, image: Optional[np.ndarray]) -> Optional[QImage]:
+        if image is None:
+            return None
+        array = np.ascontiguousarray(image)
+        if array.ndim == 2:
+            array = np.stack([array, array, array], axis=-1)
+        height, width = array.shape[:2]
+        if array.shape[2] == 4:
+            qimage = QImage(array.data, width, height, array.strides[0], QImage.Format_RGBA8888)
+        else:
+            qimage = QImage(array.data, width, height, array.strides[0], QImage.Format_RGB888)
+        return qimage.copy()
 
     def grid_shape(self) -> tuple[int, int]:
         return self._grid
@@ -79,6 +104,28 @@ class GridCanvas(QWidget):
         self._fit = True
         self._pan = QPoint(0, 0)
         self.update()
+
+    def reset_view(self):
+        """ 重置为适应窗口，清除手动缩放与平移 """
+        self._zoom = 1.0
+        self.fit_to_view()
+        self.zoomChanged.emit(self._display_scale())
+
+    def center_on_cell(self, col: int, row: int):
+        """ 将指定网格单元定位到画布中央 """
+        if not self._image:
+            return
+        if self._fit:
+            self._zoom = self._display_scale()
+            self._fit = False
+        scale = self._zoom
+        center_x = self.width() / 2.0
+        center_y = self.height() / 2.0
+        cell_x = (col + 0.5) * scale
+        cell_y = (row + 0.5) * scale
+        self._pan = QPoint(int(center_x - cell_x), int(center_y - cell_y))
+        self.update()
+        self.zoomChanged.emit(self._display_scale())
 
     def reset_zoom(self):
         self._fit = False
@@ -145,7 +192,8 @@ class GridCanvas(QWidget):
 
         painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
         self._draw_checkerboard(painter, rect)
-        painter.drawImage(rect, self._image)
+        source = self._reference if (self._show_reference and self._reference is not None) else self._image
+        painter.drawImage(rect, source)
 
         if self._show_grid:
             scale = rect.width() / self._grid[0]
@@ -240,12 +288,18 @@ class GridCanvas(QWidget):
         if event.key() == Qt.Key_Space:
             self._space_down = True
             self.setCursor(Qt.OpenHandCursor)
+        elif event.key() == Qt.Key_C and self._reference is not None:
+            self._show_reference = True
+            self.update()
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event):
         if event.key() == Qt.Key_Space:
             self._space_down = False
             self.setCursor(Qt.ArrowCursor)
+        elif event.key() == Qt.Key_C and self._reference is not None:
+            self._show_reference = False
+            self.update()
         super().keyReleaseEvent(event)
 
     def resizeEvent(self, event):

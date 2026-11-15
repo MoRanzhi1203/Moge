@@ -3,6 +3,7 @@
 ##############################
 
 import csv
+import math
 from pathlib import Path
 
 from Moge.core.models import RenderResult
@@ -21,6 +22,7 @@ def _entry_extra(entry) -> dict:
 
 def material_rows(result: RenderResult) -> list[dict]:
     counts = result.stats.get("counts", {})
+    pack_size = int(result.stats.get("pack_size") or 0)
     rows = []
     for entry in result.grid.entries:
         count = int(counts.get(entry.id, 0))
@@ -33,6 +35,7 @@ def material_rows(result: RenderResult) -> list[dict]:
                 "hex": "#{:02X}{:02X}{:02X}".format(*entry.rgb),
                 "rgb": f"{entry.rgb[0]},{entry.rgb[1]},{entry.rgb[2]}",
                 "count": count,
+                "packs": math.ceil(count / pack_size) if pack_size else "",
                 **_entry_extra(entry),
             }
         )
@@ -47,7 +50,7 @@ def export_materials_csv(result: RenderResult, path: str) -> str:
         target = target.with_suffix(".csv")
 
     rows = material_rows(result)
-    fields = ["id", "name", "hex", "rgb", "count", "brand", "series", "code", "category", "source"]
+    fields = ["id", "name", "hex", "rgb", "count", "packs", "brand", "series", "code", "category", "source"]
     with target.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
