@@ -70,7 +70,7 @@ def render_textured(labels: np.ndarray, entries: list, cell_pixels: int = 16) ->
 
 def render_document(document, style: str = "solid") -> np.ndarray:
     """ 根据预览风格渲染文档；切换风格不修改网格与材料统计 """
-    transparent = document.mode == "pixel"
+    transparent = document.mode in ("pixel", "beads")
     if style == "texture":
         return render_textured(document.labels, document.entries)
     return render_grid(document.labels, document.entries, transparent=transparent)

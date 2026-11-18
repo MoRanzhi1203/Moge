@@ -43,12 +43,20 @@ class GridDocument:
     @classmethod
     def from_result(cls, result: RenderResult) -> "GridDocument":
         """ 复用结果中的 labels 引用，保证渲染与导出读取同一份数据 """
+        locked = None
+        cells = result.grid.cells
+        if cells:
+            height, width = result.grid.spec.height, result.grid.spec.width
+            if len(cells) == height * width:
+                locked = np.array([bool(cell.get("locked", False)) for cell in cells], dtype=bool)
+                locked = locked.reshape(height, width)
         return cls(
             spec=result.grid.spec,
             mode=result.mode,
             labels=result.grid.labels,
             entries=list(result.grid.entries),
             materials=list(result.grid.materials),
+            locked=locked,
         )
 
     # ---------- 编辑历史 ---------- #
@@ -80,6 +88,11 @@ class GridDocument:
         self._history.append(self.labels.copy())
         self.labels = self._redo.pop()
         return True
+
+    def clear_history(self):
+        """ 调色板整体替换等结构变化后清空历史，避免撤销回到不兼容的调色板 """
+        self._history.clear()
+        self._redo.clear()
 
     # ---------- 区域锁定 ---------- #
     def is_locked(self, col: int, row: int) -> bool:

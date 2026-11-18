@@ -7,10 +7,44 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from Moge.core.models import GridSpec, PipelineConfig
+from Moge.core.models import GridSpec, PaletteEntry, PipelineConfig
 
 MODE_KEY = "pixel"
 MODE_LABEL = "普通像素化"
+
+PIXEL_REFERENCE_PALETTE = (
+    ("黑", (20, 20, 20)),
+    ("白", (245, 245, 245)),
+    ("灰", (128, 128, 128)),
+    ("浅灰", (200, 200, 200)),
+    ("红", (210, 45, 45)),
+    ("深红", (130, 25, 30)),
+    ("橙", (235, 125, 35)),
+    ("黄", (245, 205, 55)),
+    ("黄绿", (150, 200, 60)),
+    ("绿", (50, 150, 70)),
+    ("深绿", (25, 90, 50)),
+    ("青", (60, 190, 190)),
+    ("浅蓝", (110, 180, 235)),
+    ("蓝", (40, 90, 200)),
+    ("紫", (130, 70, 180)),
+    ("粉", (240, 150, 180)),
+)
+
+
+def reference_entries() -> list[PaletteEntry]:
+    """ 未生成作品时的像素参考调色板，仅用于图例浏览，不参与处理 """
+    return [
+        PaletteEntry(
+            id=f"pixel-ref-{index:03d}",
+            name=name,
+            rgb=rgb,
+            source="pixel-reference",
+            meta={"code": f"{index + 1:03d}", "brand": "Pixel", "series": "参考"},
+        )
+        for index, (name, rgb) in enumerate(PIXEL_REFERENCE_PALETTE)
+    ]
+
 
 PIXEL_DEFAULTS: dict[str, object] = {
     "sampling": "mean",
@@ -20,6 +54,8 @@ PIXEL_DEFAULTS: dict[str, object] = {
     "preset": "custom",
     "optimize": False,
     "max_delta": 6.0,
+    "keep_blank_cells": True,
+    "empty_alpha_threshold": 0.5,
 }
 
 PRESET_OPTIONS = (

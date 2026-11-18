@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from Moge.core.grid import ensure_rgb, isolated_cells, render_grid, sample_grid
+from Moge.core.grid import ensure_rgb, isolated_cells, render_grid, sample_alpha, sample_grid
 from Moge.core.models import (
     MaterialRef,
     PaletteEntry,
@@ -31,14 +31,32 @@ def register_stage(name: str):
     return decorator
 
 
+def apply_blank_mask(context: "PipelineContext", labels: np.ndarray) -> np.ndarray:
+    """ 统一将透明采样格标记为空白格；像素/MC/拼豆共用，白色材料不受影响 """
+    if context.grid_alpha is None:
+        return labels
+    if not bool(context.config.params.get("keep_blank_cells", True)):
+        return labels
+    threshold = float(context.config.params.get("empty_alpha_threshold", 0.5))
+    empty = np.asarray(context.grid_alpha) < threshold
+    if not empty.any():
+        return labels
+    result = np.asarray(labels).copy()
+    result[empty] = -1
+    context.diagnostics["blank_cells"] = int(np.count_nonzero(empty))
+    return result
+
+
 @dataclass
 class PipelineContext:
     """ 阶段之间共享的上下文 """
 
     image_rgb: np.ndarray
     config: PipelineConfig
+    source_image: Optional[np.ndarray] = None
     image_diagnostics: dict[str, int] = field(default_factory=dict)
     grid_rgb: Optional[np.ndarray] = None
+    grid_alpha: Optional[np.ndarray] = None
     labels: Optional[np.ndarray] = None
     entries: list[PaletteEntry] = field(default_factory=list)
     materials: list[MaterialRef] = field(default_factory=list)
@@ -73,6 +91,8 @@ def _ensure_modes_loaded():
 def stage_sample_grid(context: PipelineContext):
     context.report(0.0, "正在采样网格")
     context.grid_rgb = sample_grid(context.image_rgb, context.config.grid, context.config.sampling)
+    source = context.source_image if context.source_image is not None else context.image_rgb
+    context.grid_alpha = sample_alpha(source, context.config.grid)
     context.report(1.0, "网格采样完成")
 
 
@@ -103,7 +123,8 @@ def stage_quantize_colors(context: PipelineContext):
         )
         for index, color in enumerate(output.centers_rgb)
     ]
-    context.labels = output.labels.reshape(context.config.grid.height, context.config.grid.width)
+    labels = output.labels.reshape(context.config.grid.height, context.config.grid.width)
+    context.labels = apply_blank_mask(context, labels)
     context.diagnostics.update(output.diagnostics)
     context.report(1.0, "颜色量化完成")
 
@@ -139,7 +160,8 @@ def stage_render_preview(context: PipelineContext):
         raise ValueError("渲染前必须完成颜色/材料映射")
 
     context.report(0.0, "正在渲染预览")
-    transparent = context.config.mode == "pixel"
+    # 拼豆空白格与像素透明格都以 alpha=0 保留，不能渲染成白色珠子
+    transparent = context.config.mode in ("pixel", "beads")
     context.preview = render_grid(context.labels, context.entries, transparent=transparent)
     context.report(1.0, "预览渲染完成")
 
@@ -183,6 +205,7 @@ def run_pipeline(
     context = PipelineContext(
         image_rgb=image_rgb,
         config=config,
+        source_image=np.asarray(image),
         image_diagnostics=image_diagnostics,
         progress_callback=progress,
         cancel_callback=should_cancel,

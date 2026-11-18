@@ -53,6 +53,16 @@ def _edge_mask(image: np.ndarray, spec: GridSpec) -> np.ndarray:
     return reduced >= threshold
 
 
+def sample_alpha(image: np.ndarray, spec: GridSpec) -> np.ndarray:
+    """ 将源图 alpha 采样为每格不透明覆盖率；无 alpha 时全部为 1 """
+    array = np.asarray(image)
+    if array.ndim == 3 and array.shape[2] == 4:
+        alpha = array[..., 3].astype(np.float32)
+        reduced = cv2.resize(alpha, (spec.width, spec.height), interpolation=cv2.INTER_AREA)
+        return np.clip(reduced / 255.0, 0.0, 1.0)
+    return np.ones((spec.height, spec.width), dtype=np.float32)
+
+
 def sample_grid(image: np.ndarray, spec: GridSpec, method: str = "mean") -> np.ndarray:
     """
     将源图采样为逻辑网格颜色

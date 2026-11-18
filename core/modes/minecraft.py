@@ -16,7 +16,7 @@ from Moge.core.materials import (
     filter_blocks,
 )
 from Moge.core.models import GridSpec, MaterialRef, PaletteEntry, PipelineConfig
-from Moge.core.pipeline import PipelineContext, register_stage
+from Moge.core.pipeline import PipelineContext, apply_blank_mask, register_stage
 
 MODE_KEY = "minecraft"
 MODE_LABEL = "Minecraft 方块画"
@@ -37,6 +37,8 @@ MC_DEFAULTS: dict[str, object] = {
     "matching_strategy": "perceptual",
     "texture_overrides": {},
     "texture_pack_name": "",
+    "keep_blank_cells": True,
+    "empty_alpha_threshold": 0.5,
 }
 
 MATCHING_OPTIONS = (
@@ -221,6 +223,54 @@ def _match_indices(
     return result
 
 
+def block_entries(blocks: list[MinecraftBlock], version: str, edition: str,
+                  overrides: dict = None) -> list[PaletteEntry]:
+    """ 将合法方块候选转换为统一调色板条目，供管线、图例浏览与导出共用 """
+    overrides = overrides or {}
+
+    def block_color(block: MinecraftBlock):
+        value = overrides.get(block.block_id, block.rgb)
+        return tuple(int(channel) for channel in value)
+
+    return [
+        PaletteEntry(
+            id=block.block_id,
+            name=block.name,
+            rgb=block_color(block),
+            source="user-resource-pack" if block.block_id in overrides else block.source,
+            meta={
+                "brand": edition,
+                "series": version,
+                "code": block.block_id,
+                "category": block.category,
+                "obtainability": block.obtainability,
+                "renewable": block.renewable,
+                "cost_tier": block.cost_tier,
+                "transparent": block.transparent,
+                "gravity": block.gravity,
+                "orientation": block.orientation,
+                "visible_face": block.visible_face,
+                "geometry": block.geometry,
+                "block_state": block.block_state,
+                "texture_sha256": block.texture_sha256,
+                "texture_path": block.texture_path,
+                "verified": block.verified,
+                "complexity": block.complexity,
+                "brightness_std": block.brightness_std,
+                "median_rgb": block.median_rgb,
+                "tinted": block.tinted,
+                "version": version,
+                "edition": edition,
+                "texture": (
+                    "real" if block.source == "mojang-resource" and block.texture_path
+                    else ("user-average" if block.block_id in overrides else "approximate")
+                ),
+            },
+        )
+        for block in blocks
+    ]
+
+
 @register_stage("map_materials")
 def stage_map_materials(context: PipelineContext):
     if context.grid_rgb is None:
@@ -274,39 +324,10 @@ def stage_map_materials(context: PipelineContext):
             strategy,
         )
 
-    context.labels = indices.reshape(context.config.grid.height, context.config.grid.width)
-    context.entries = [
-        PaletteEntry(
-            id=block.block_id,
-            name=block.name,
-            rgb=block_color(block),
-            source="user-resource-pack" if block.block_id in overrides else block.source,
-            meta={
-                "category": block.category,
-                "obtainability": block.obtainability,
-                "renewable": block.renewable,
-                "cost_tier": block.cost_tier,
-                "transparent": block.transparent,
-                "gravity": block.gravity,
-                "orientation": block.orientation,
-                "visible_face": block.visible_face,
-                "geometry": block.geometry,
-                "block_state": block.block_state,
-                "texture_sha256": block.texture_sha256,
-                "texture_path": block.texture_path,
-                "verified": block.verified,
-                "complexity": block.complexity,
-                "brightness_std": block.brightness_std,
-                "median_rgb": block.median_rgb,
-                "tinted": block.tinted,
-                "texture": (
-                    "real" if block.source == "mojang-resource" and block.texture_path
-                    else ("user-average" if block.block_id in overrides else "approximate")
-                ),
-            },
-        )
-        for block in candidates
-    ]
+    context.labels = apply_blank_mask(
+        context, indices.reshape(context.config.grid.height, context.config.grid.width)
+    )
+    context.entries = block_entries(candidates, version, edition, overrides)
     context.materials = [
         MaterialRef(
             id=block.block_id,
@@ -329,17 +350,28 @@ def stage_map_materials(context: PipelineContext):
     ]
 
     # 合法性反向核对：每个单元都必须属于候选集
-    used_ids = {context.entries[int(index)].id for index in np.unique(indices)}
+    flat_labels = context.labels.reshape(-1)
+    valid_positions = np.nonzero(flat_labels >= 0)[0]
+    used_values = np.unique(flat_labels[flat_labels >= 0])
+    used_ids = {context.entries[int(index)].id for index in used_values}
     legal = used_ids.issubset({block.block_id for block in candidates})
     if not legal:
         raise ValueError("结果中出现候选集之外的方块，已中止")
 
-    step = max(1, len(pixels) // 5000)
-    matched_rgb = palette_rgb[indices[::step]]
-    deltas = delta_e_00(srgb_to_lab(pixels[::step]), srgb_to_lab(matched_rgb))
-    mean_delta = float(np.mean(deltas))
-    p95_delta = float(np.percentile(deltas, 95))
-    feature_error = float(np.mean(np.abs(target_edge - block_complexity[indices])))
+    if valid_positions.size:
+        step = max(1, valid_positions.size // 5000)
+        sample_positions = valid_positions[::step]
+        matched_rgb = palette_rgb[flat_labels[sample_positions]]
+        deltas = delta_e_00(srgb_to_lab(pixels[sample_positions]), srgb_to_lab(matched_rgb))
+        mean_delta = float(np.mean(deltas))
+        p95_delta = float(np.percentile(deltas, 95))
+        feature_error = float(
+            np.mean(np.abs(target_edge[valid_positions] - block_complexity[flat_labels[valid_positions]]))
+        )
+    else:
+        mean_delta = 0.0
+        p95_delta = 0.0
+        feature_error = 0.0
     palette_limited = len(candidates) < 80
     quality_warning = mean_delta > 8.0 or p95_delta > 15.0
     if quality_warning:

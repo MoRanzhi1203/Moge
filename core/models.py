@@ -97,6 +97,9 @@ class PixelGrid:
     entries: list[PaletteEntry]
     mode: str = "pixel"
     materials: list[MaterialRef] = field(default_factory=list)
+    # 拼豆施工图扩展：符号表与逐格元数据（工程保存/读取时保留）
+    symbols: dict[str, str] = field(default_factory=dict)
+    cells: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
         if self.labels.shape != (self.spec.height, self.spec.width):

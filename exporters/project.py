@@ -9,11 +9,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from Moge.core.beads.pattern import build_cells
 from Moge.core.grid import upscale_grid
 from Moge.core.models import GridSpec, PaletteEntry, PixelGrid, ProjectDocument, RenderResult
 
 SCHEMA_VERSION = 1
-MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 ALLOWED_MEMBERS = {"manifest.json", "thumbnail.png"}
 
 
@@ -33,11 +34,21 @@ def _json_safe(value):
     return str(value)
 
 
-def _manifest(result: RenderResult, source_path: str = None) -> dict:
+def _manifest(result: RenderResult, source_path: str = None, locked=None) -> dict:
     settings = _json_safe(result.settings)
     # 色卡从 SQLite 数据库恢复，工程文件只保留筛选条件，避免重复存储整份色卡
     if isinstance(settings, dict) and isinstance(settings.get("params"), dict):
         settings["params"].pop("catalog", None)
+
+    symbols = dict(result.grid.symbols)
+    cells = list(result.grid.cells)
+    if result.mode in ("beads", "minecraft", "pixel"):
+        from Moge.core.workbench import prepare_result
+
+        prepare_result(result)
+        symbols = dict(result.grid.symbols)
+        cells = build_cells(result.grid.labels, result.grid.entries, symbols, locked=locked)
+
     return {
         "schema": SCHEMA_VERSION,
         "app": "Moge",
@@ -50,6 +61,8 @@ def _manifest(result: RenderResult, source_path: str = None) -> dict:
             "width": int(result.grid.spec.width),
             "height": int(result.grid.spec.height),
             "labels": result.grid.labels.astype(int).tolist(),
+            "symbols": symbols,
+            "cells": cells,
             "entries": [
                 {
                     "id": entry.id,
@@ -64,13 +77,13 @@ def _manifest(result: RenderResult, source_path: str = None) -> dict:
     }
 
 
-def save_project(path: str, result: RenderResult, source_path: str = None) -> str:
+def save_project(path: str, result: RenderResult, source_path: str = None, locked=None) -> str:
     """ 保存为 .moge（ZIP：manifest.json + thumbnail.png） """
     target = Path(path)
     if target.suffix.lower() != ".moge":
         target = target.with_suffix(".moge")
 
-    manifest = _manifest(result, source_path)
+    manifest = _manifest(result, source_path, locked)
     payload = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
 
     thumbnail = upscale_grid(result.image, 4)
@@ -130,7 +143,28 @@ def load_project(path: str) -> ProjectDocument:
     if entries and labels.size and labels.max() >= len(entries):
         raise ValueError("工程标签索引越界")
 
-    grid = PixelGrid(spec=spec, labels=labels, entries=entries, mode=str(manifest.get("mode", "pixel")))
+    symbols = {
+        str(key): str(value)
+        for key, value in (grid_data.get("symbols") or {}).items()
+    }
+    cells = []
+    for item in grid_data.get("cells") or []:
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        record["x"] = int(record.get("x", 0))
+        record["y"] = int(record.get("y", 0))
+        record["is_empty"] = bool(record.get("is_empty", False))
+        cells.append(record)
+
+    grid = PixelGrid(
+        spec=spec,
+        labels=labels,
+        entries=entries,
+        mode=str(manifest.get("mode", "pixel")),
+        symbols=symbols,
+        cells=cells,
+    )
     return ProjectDocument(
         version=schema,
         app_version=str(manifest.get("app_version", "2.0.0")),
